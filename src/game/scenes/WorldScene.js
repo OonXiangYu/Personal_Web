@@ -1,7 +1,13 @@
 // The main game scene: the map, the players and the camera.
-// For now the map is a simple placeholder grid. Real Tiled maps come later.
-// It also connects to the real-time server, sends our position, shows
-// the other players, and connects the chat (input, log, bubbles).
+// The map comes from Tiled (public/assets/maps/world.tmj, see WorldMap.js).
+//
+// It runs in one of two modes, chosen by the "user" in the registry:
+//   - spectator (no user): behind the login form. The map, other players
+//     walking (read-only connection), and a slowly drifting camera.
+//     No own player, no controls, no chat, no status box.
+//   - player (logged in): your own player, controls, the real-time
+//     connection, chat (input, log, bubbles) and the status box.
+// Logging in or out restarts this scene in the other mode (see createGame.js).
 
 import Phaser from 'phaser';
 import { Player } from '../Player.js';
@@ -12,15 +18,23 @@ import { showNetStatus, hideNetStatus } from '../../ui/netStatus.js';
 import { PlayerOverlay } from '../../ui/PlayerOverlay.js';
 import { ChatInput } from '../../ui/ChatInput.js';
 import { ChatLog } from '../../ui/ChatLog.js';
-import { WORLD_WIDTH, WORLD_HEIGHT, SPAWN_POINT } from '../../../shared/world.js';
+import { createWorldMap } from '../WorldMap.js';
+import { SpectatorCamera } from '../SpectatorCamera.js';
+import { centerLimits } from '../../../shared/mapInfo.js';
+import { PLAYER_FEET } from '../../../shared/world.js';
 import { MSG, CLIENT_SEND_INTERVAL_MS } from '../../../shared/protocol.js';
 
-// Size of one placeholder ground tile.
-const TILE_SIZE = 32;
+// The message shown when the server has a different map than this page.
+const MAP_OUTDATED_MESSAGE = 'The game was updated. Please refresh the page.';
 
 // We want the shorter side of the screen to show about this many game pixels
 // (so phones and PCs see about the same amount of the world).
 const TARGET_VIEW_SIZE = 340;
+
+// After login, the camera glides from where the spectator camera was to the
+// player. A small "lerp" (0..1) = a soft, slow catch-up; 1 = locked on.
+const LOGIN_GLIDE_LERP = 0.08;
+const LOGIN_GLIDE_MS = 1200;
 
 export class WorldScene extends Phaser.Scene {
   constructor() {
@@ -28,46 +42,38 @@ export class WorldScene extends Phaser.Scene {
   }
 
   create() {
-    this.createGround();
+    // Draw the Tiled map. `mapInfo` has the size, walls and spawn point.
+    const { info, collisionLayer } = createWorldMap(this);
+    this.mapInfo = info;
 
-    // The world edges stop the player from walking off the map.
-    this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-
-    // The user was saved in the registry when the game was created.
+    // Logged in? (null = a logged-out visitor behind the login form.)
     const user = this.registry.get('user');
+    this.isSpectator = !user;
 
-    // Everyone starts at the same spot. The server's `welcome` message may
-    // move us (for example back to where we were before a reconnect).
-    // TODO: start at the user's `lastPosition` from MongoDB instead.
-    this.player = new Player(this, SPAWN_POINT.x, SPAWN_POINT.y);
-    this.player.sprite.setCollideWorldBounds(true);
+    // Where the camera was before this mode started (set by createGame.js
+    // when switching modes), so we can glide instead of jumping.
+    const cameraFrom = this.registry.get('cameraFrom');
+    this.registry.set('cameraFrom', null);
 
-    // Our player id. It is the user id, the same id the server uses for us.
-    this.myId = user.id;
+    // True when the server has a different map than this page (see `welcome`).
+    this.mapOutdated = false;
 
     // Names and chat bubbles, drawn as HTML on top of the game (see PlayerOverlay.js).
     this.overlay = new PlayerOverlay(document.getElementById('player-overlay'));
-    this.overlay.addPlayer(this.myId, user.username, { isLocal: true });
-
-    this.controls = new Controls(this);
     this.remotePlayers = new RemotePlayers(this, this.overlay);
-
-    this.chatLog = new ChatLog();
-    this.chatInput = new ChatInput({
-      onSend: (text) => this.sendChat(text),
-      // While the chat box is open, the movement keys type letters instead.
-      onOpenChange: (open) => this.controls.setEnabled(!open),
-    });
-
-    // The camera follows the player but never shows outside the world.
-    const camera = this.cameras.main;
-    camera.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    camera.startFollow(this.player.sprite, true);
 
     // Set the zoom now, and again every time the window size changes
     // (resizing a browser window or rotating a phone).
+    // (Done before the camera code below, which needs the zoom.)
     this.updateZoom(this.scale.gameSize);
     this.scale.on('resize', this.updateZoom, this);
+
+    if (this.isSpectator) {
+      this.myId = null;
+      this.spectatorCamera = new SpectatorCamera(this, info, this.remotePlayers, cameraFrom);
+    } else {
+      this.createPlayer(user, collisionLayer, cameraFrom);
+    }
 
     // Move the names and bubbles after every drawn frame. "postrender" runs
     // after Phaser has drawn, when the camera position for this frame is
@@ -76,11 +82,12 @@ export class WorldScene extends Phaser.Scene {
 
     this.startNetwork();
 
-    // When the scene stops or the game is destroyed (logout), clean up.
-    // The scale manager and the game live longer than this scene, so remove
-    // our listeners, or they would call a dead scene. Close the connection,
-    // or we would stay "online" after logging out. And remove the HTML we
-    // added (names, bubbles, chat), or it would stay on top of the login form.
+    // When the scene stops (switching mode on login/logout) or the game is
+    // destroyed, clean up. The scale manager and the game live longer than
+    // this scene, so remove our listeners, or they would call a dead scene.
+    // Close the connection, or we would stay connected in the old mode.
+    // And remove the HTML we added (names, bubbles, chat), or it would stay
+    // on top of the login form.
     let cleanedUp = false;
     const cleanUp = () => {
       if (cleanedUp) return;
@@ -89,23 +96,76 @@ export class WorldScene extends Phaser.Scene {
       this.game.events.off('postrender', this.updateOverlay, this);
       this.connection.close();
       hideNetStatus();
-      this.chatInput.destroy();
-      this.chatLog.destroy();
+      this.chatInput?.destroy();
+      this.chatLog?.destroy();
       this.overlay.clear();
     };
     this.events.once('shutdown', cleanUp);
     this.events.once('destroy', cleanUp);
   }
 
+  // Player mode only: our own player, walls, controls, chat, camera.
+  createPlayer(user, collisionLayer, cameraFrom) {
+    const info = this.mapInfo;
+
+    // Keep the player's WHOLE body inside the map.
+    this.setPhysicsBounds();
+
+    // Start at the map's spawn point. The server's `welcome` message may
+    // move us (for example back to where we were before a reconnect).
+    // TODO: start at the user's `lastPosition` from MongoDB instead.
+    this.player = new Player(this, info.spawn.x, info.spawn.y);
+    this.player.sprite.setCollideWorldBounds(true);
+
+    // Walls: the player's feet cannot enter tiles of the "collision" layer.
+    // Arcade physics makes the player slide along a wall instead of sticking.
+    if (collisionLayer) {
+      this.physics.add.collider(this.player.sprite, collisionLayer);
+    }
+
+    // Our player id. It is the user id, the same id the server uses for us.
+    this.myId = user.id;
+    this.overlay.addPlayer(this.myId, user.username, { isLocal: true });
+
+    this.controls = new Controls(this);
+
+    this.chatLog = new ChatLog();
+    this.chatInput = new ChatInput({
+      onSend: (text) => this.sendChat(text),
+      // While the chat box is open, the movement keys type letters instead.
+      onOpenChange: (open) => this.controls.setEnabled(!open),
+    });
+
+    // The camera ALWAYS keeps the player in the middle of the screen, also at
+    // the map edges. It has no bounds on purpose: near an edge, the area
+    // outside the map is shown in the game's background color (black).
+    // This also keeps the player's name label on screen at the top edge.
+    const camera = this.cameras.main;
+    if (cameraFrom) {
+      // Just logged in: start where the spectator camera was and glide
+      // softly to the player, then lock on.
+      camera.centerOn(cameraFrom.x, cameraFrom.y);
+      camera.startFollow(this.player.sprite, true, LOGIN_GLIDE_LERP, LOGIN_GLIDE_LERP);
+      this.time.delayedCall(LOGIN_GLIDE_MS, () => camera.setLerp(1, 1));
+    } else {
+      camera.startFollow(this.player.sprite, true);
+    }
+  }
+
   // Moves the HTML names and bubbles to the players' current positions.
   updateOverlay() {
     this.overlay.update(this.cameras.main, (id) =>
-      id === this.myId ? this.player.sprite : this.remotePlayers.getSprite(id),
+      id === this.myId && this.player ? this.player.sprite : this.remotePlayers.getSprite(id),
     );
   }
 
-  // Phaser calls update() every frame. `time` is in milliseconds.
-  update(time) {
+  // Phaser calls update() every frame. `time` and `delta` are in milliseconds.
+  update(time, delta) {
+    if (this.isSpectator) {
+      this.remotePlayers.update();
+      this.spectatorCamera.update(time, delta);
+      return;
+    }
     this.player.move(this.controls.getDirection());
     this.sendMoveIfNeeded(time);
     this.remotePlayers.update();
@@ -120,6 +180,8 @@ export class WorldScene extends Phaser.Scene {
     this.lastSentAt = 0;
 
     this.connection = new WorldConnection({
+      // Spectators connect read-only, with no token (see WorldConnection.js).
+      spectator: this.isSpectator,
       onMessage: (data) => this.handleServerMessage(data),
       onStatus: (status) => this.handleNetStatus(status),
       // main.js gave us this function. It shows the login form again.
@@ -171,11 +233,22 @@ export class WorldScene extends Phaser.Scene {
     switch (data.type) {
       case MSG.WELCOME: {
         if (!Array.isArray(data.players)) return;
-        // data.you is our user id, the same as this.myId.
+        // Does the server have the same map as this page? If not, one of
+        // them is older (for example this tab was open during a deploy).
+        // Walls would not match, so ask the player to refresh.
+        if (data.map !== this.mapInfo.fingerprint) {
+          console.warn(
+            `Map mismatch: the server has map ${data.map}, this page has ${this.mapInfo.fingerprint}. ` +
+              'Refresh the page. If it still happens, deploy BOTH the website and the realtime Worker.',
+          );
+          this.mapOutdated = true;
+        }
+        // data.you is our user id, the same as this.myId
+        // (both are null for a spectator, who has no player of their own).
         // Start fresh: the list in `welcome` is complete.
         this.remotePlayers.clear();
         for (const player of data.players) {
-          if (player.id === this.myId) {
+          if (this.myId && player.id === this.myId) {
             // The server decides where we are (for example after a reconnect).
             this.player.setPosition(player.x, player.y);
           } else {
@@ -187,7 +260,8 @@ export class WorldScene extends Phaser.Scene {
       case MSG.JOIN:
         if (data.player && data.player.id !== this.myId) {
           this.remotePlayers.add(data.player);
-          this.chatLog.addSystem(`${data.player.name} joined`);
+          // (Spectators have no chat log, hence the "?.".)
+          this.chatLog?.addSystem(`${data.player.name} joined`);
         }
         break;
       case MSG.LEAVE: {
@@ -195,18 +269,20 @@ export class WorldScene extends Phaser.Scene {
         const name = this.remotePlayers.getName(data.id);
         this.remotePlayers.remove(data.id);
         if (name) {
-          this.chatLog.addSystem(`${name} left`);
+          this.chatLog?.addSystem(`${name} left`);
         }
         break;
       }
       case MSG.CHAT:
+        // The server never sends chat to spectators. Ignore it just in case.
+        if (this.isSpectator) return;
         if (typeof data.text !== 'string' || typeof data.name !== 'string') return;
         // Works for our own messages too (our id is in the overlay as well).
         this.overlay.showBubble(data.id, data.text);
         this.chatLog.addChat(data.name, data.text);
         return;
       case MSG.NOTICE:
-        if (typeof data.text === 'string') {
+        if (!this.isSpectator && typeof data.text === 'string') {
           this.chatInput.showNotice(data.text);
         }
         return;
@@ -236,7 +312,21 @@ export class WorldScene extends Phaser.Scene {
 
   // Updates the status box in the top-left corner.
   showStatus() {
+    // Logged-out visitors see no status box: the login popup is enough.
+    if (this.isSpectator) {
+      hideNetStatus();
+      return;
+    }
+
     const retry = () => this.connection.retry();
+
+    // An old map is more important than the player count: walls may not
+    // match the server's, so tell the player to refresh. They can still play.
+    if (this.mapOutdated && this.netStatus === STATUS.ONLINE) {
+      showNetStatus(MAP_OUTDATED_MESSAGE, 'Refresh', () => window.location.reload());
+      return;
+    }
+
     switch (this.netStatus) {
       case STATUS.CONNECTING:
         showNetStatus('Connecting…');
@@ -269,20 +359,19 @@ export class WorldScene extends Phaser.Scene {
 
   // ---------- Map and camera ----------
 
-  // Draws the placeholder ground: one grass tile with a darker edge,
-  // repeated over the whole world, so it looks like a grid.
-  createGround() {
-    const graphics = this.make.graphics({ x: 0, y: 0 }, false);
-    graphics.fillStyle(0x4a7c3a);
-    graphics.fillRect(0, 0, TILE_SIZE, TILE_SIZE);
-    graphics.fillStyle(0x427035);
-    graphics.fillRect(0, 0, TILE_SIZE, 1);
-    graphics.fillRect(0, 0, 1, TILE_SIZE);
-    graphics.generateTexture('ground-tile', TILE_SIZE, TILE_SIZE);
-    graphics.destroy();
-
-    // A TileSprite repeats one texture over a big area. It is cheap to draw.
-    this.add.tileSprite(0, 0, WORLD_WIDTH, WORLD_HEIGHT, 'ground-tile').setOrigin(0, 0);
+  // Sets the physics world bounds so the WHOLE visible player stays inside
+  // the map. The physics body is only the feet, so the bounds are the
+  // allowed range for the feet box, worked out from the allowed range for
+  // the sprite center (shared with the server, see shared/mapInfo.js).
+  // Example: the head is 16 px above the center, so the center can never be
+  // closer than 16 px to the top edge, so the feet box starts 27 px down.
+  setPhysicsBounds() {
+    const limits = centerLimits(this.mapInfo);
+    const left = limits.minX - PLAYER_FEET.halfWidth;
+    const top = limits.minY + PLAYER_FEET.top;
+    const right = limits.maxX + PLAYER_FEET.halfWidth;
+    const bottom = limits.maxY + PLAYER_FEET.bottom;
+    this.physics.world.setBounds(left, top, right - left, bottom - top);
   }
 
   // Picks a whole-number zoom (1, 2, 3...) so the shorter side of the screen

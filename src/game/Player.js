@@ -6,7 +6,7 @@
 //     setPosition() and showState() using the data the server sends
 
 import Phaser from 'phaser';
-import { MOVE_SPEED } from '../../shared/world.js';
+import { MOVE_SPEED, PLAYER_FEET } from '../../shared/world.js';
 
 // ---------- Sprite sheet layout ----------
 // Measured from the PNG files: each file is 768 x 80 pixels,
@@ -20,14 +20,16 @@ const IDLE_FRAME_RATE = 8;
 const RUN_FRAME_RATE = 12;
 
 // ---------- Hit box ----------
-// The character only fills a small part of the 96 x 80 frame
-// (about 18 x 34 pixels, with the feet near y = 58).
-// We use a small box around the feet, so the player can walk "behind"
-// things later, as in most top-down games.
-const BODY_WIDTH = 14;
-const BODY_HEIGHT = 8;
-const BODY_OFFSET_X = (FRAME_WIDTH - BODY_WIDTH) / 2;
-const BODY_OFFSET_Y = 51;
+// The character only fills a small part of the 96 x 80 frame.
+// The physics body is a small box around the feet, so the player can walk
+// "behind" things, as in most top-down games. Its size comes from
+// shared/world.js, so the server checks walls with exactly the same box.
+// (Offsets are measured from the frame's top-left; the sprite's center is
+// the middle of the frame.)
+const BODY_WIDTH = PLAYER_FEET.halfWidth * 2;
+const BODY_HEIGHT = PLAYER_FEET.bottom - PLAYER_FEET.top;
+const BODY_OFFSET_X = FRAME_WIDTH / 2 - PLAYER_FEET.halfWidth;
+const BODY_OFFSET_Y = FRAME_HEIGHT / 2 + PLAYER_FEET.top;
 
 // ---------- Name label position ----------
 // Distance (in game pixels) from the sprite center up to the bottom of the

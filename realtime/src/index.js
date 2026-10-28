@@ -3,13 +3,14 @@
 // to the right game room (a Durable Object, see WorldRoom.js).
 //
 // URLs:
-//   GET  /auth-check                 → 200 if the token is OK, 401 if not (used by the browser to explain errors)
-//   WS   /parties/world/<room>?token= → join a game room
+//   GET  /auth-check                     → 200 if the token is OK, 401 if not (used by the browser to explain errors)
+//   WS   /parties/world/<room>?token=     → join a game room as a player
+//   WS   /parties/world/<room>?spectator=1 → watch a game room without logging in (read-only)
 
 import { routePartykitRequest } from 'partyserver';
 import { verifyToken, getBearerToken, isAllowedOrigin } from './auth.js';
-import { ALLOWED_ROOMS } from '../../shared/protocol.js';
-import { PLAYER_ID_HEADER, PLAYER_NAME_HEADER } from './WorldRoom.js';
+import { ALLOWED_ROOMS, SPECTATOR_QUERY_FLAG } from '../../shared/protocol.js';
+import { PLAYER_ID_HEADER, PLAYER_NAME_HEADER, SPECTATOR_HEADER } from './WorldRoom.js';
 
 // Wrangler needs the Durable Object class exported from the main file.
 export { WorldRoom } from './WorldRoom.js';
@@ -46,8 +47,24 @@ async function checkConnection(request, lobby, env) {
     return textResponse(404, 'Unknown room');
   }
 
-  // Browsers cannot set headers on a WebSocket, so the token comes in the URL.
   const url = new URL(request.url);
+
+  // A spectator: a logged-out visitor watching the world behind the login
+  // form. No token needed. The room decides if there is space (see
+  // WorldRoom.js) and never lets them send anything.
+  if (url.searchParams.get(SPECTATOR_QUERY_FLAG) === '1') {
+    // Drop a token if one was sent anyway: a spectator is never a player.
+    url.searchParams.delete('token');
+    const spectatorRequest = new Request(url.toString(), request);
+    // Only this Worker sets these headers. Remove any a client sent, so
+    // nobody can pretend to be a player without a valid token.
+    spectatorRequest.headers.delete(PLAYER_ID_HEADER);
+    spectatorRequest.headers.delete(PLAYER_NAME_HEADER);
+    spectatorRequest.headers.set(SPECTATOR_HEADER, '1');
+    return spectatorRequest;
+  }
+
+  // Browsers cannot set headers on a WebSocket, so the token comes in the URL.
   const player = await verifyToken(url.searchParams.get('token'), env.JWT_SECRET);
   if (!player) {
     return textResponse(401, 'Invalid or expired login');
@@ -68,6 +85,8 @@ async function checkConnection(request, lobby, env) {
   // Usernames can be Chinese, but HTTP headers only allow plain ASCII text.
   // encodeURIComponent turns the name into safe ASCII (the room decodes it).
   checkedRequest.headers.set(PLAYER_NAME_HEADER, encodeURIComponent(player.name));
+  // A logged-in player is never a spectator, whatever headers a client sent.
+  checkedRequest.headers.delete(SPECTATOR_HEADER);
   return checkedRequest;
 }
 

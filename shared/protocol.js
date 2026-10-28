@@ -29,8 +29,11 @@ export const MSG = {
   MOVE: 'move',
 
   // server → client. Sent once, right after connecting.
-  //   { type: 'welcome', you: '<your player id>', players: [Player, ...] }
+  //   { type: 'welcome', you: '<your player id>', players: [Player, ...], map }
   //   `players` includes you, with the position the server has for you.
+  //   For a spectator (see below), `you` is null.
+  //   `map` is the server's map fingerprint (see shared/mapInfo.js). If it is
+  //   different from the browser's, one of them has an older map.
   WELCOME: 'welcome',
 
   // server → client. Someone else entered the room.
@@ -104,3 +107,28 @@ export const MAX_MESSAGES_PER_SECOND = 30;
 // The browser must NOT reconnect automatically after this one, or the two
 // tabs would keep kicking each other out forever.
 export const CLOSE_REPLACED = 4001;
+
+// "There are already MAX_SPECTATORS spectators in this room."
+// Sent right after a spectator connects, instead of refusing the connection
+// with an HTTP error: the browser cannot read why an HTTP refusal happened
+// and would keep retrying, but it can read this code. The page must NOT
+// reconnect; it just shows the map without players.
+export const CLOSE_SPECTATORS_FULL = 4003;
+
+// "You have watched for SPECTATOR_MAX_MS, so this connection was closed."
+// Protects the free plan from login pages left open for hours.
+// The page must NOT reconnect; the map keeps drifting without players.
+export const CLOSE_SPECTATOR_TIME_UP = 4004;
+
+// ---------- Spectators ----------
+// A spectator is a logged-out visitor watching the world behind the login
+// form. They connect with no token and this query flag: ?spectator=1
+// They receive positions (welcome, join, leave, state), but never chat.
+// They cannot send anything, and they are not counted as players.
+export const SPECTATOR_QUERY_FLAG = 'spectator';
+
+// At most this many spectators per room. Extra ones get CLOSE_SPECTATORS_FULL.
+export const MAX_SPECTATORS = 50;
+
+// A spectator connection is closed after this long (10 minutes).
+export const SPECTATOR_MAX_MS = 10 * 60 * 1000;

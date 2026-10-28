@@ -2,12 +2,13 @@
 // All players in the room connect to the SAME object, so it can see everyone
 // and send them each other's positions.
 //
-// It does five jobs:
+// It does six jobs:
 //   1. Keep a list of players (who is here and where they are).
 //   2. Check every `move` message (not too fast, not off the map).
 //   3. Send everyone one `state` message 10 times per second (the "tick").
 //   4. Allow only one connection per account.
-//   5. Check chat messages and send them to everyone.
+//   5. Check chat messages and send them to the players.
+//   6. Let logged-out visitors watch ("spectators"), read-only and limited.
 
 import { Server } from 'partyserver';
 import {
@@ -18,19 +19,33 @@ import {
   MAX_MESSAGES_PER_SECOND,
   CHAT_MAX_CHARS,
   CLOSE_REPLACED,
+  CLOSE_SPECTATORS_FULL,
+  CLOSE_SPECTATOR_TIME_UP,
+  MAX_SPECTATORS,
+  SPECTATOR_MAX_MS,
 } from '../../shared/protocol.js';
-import { WORLD_WIDTH, WORLD_HEIGHT, MOVE_SPEED, SPAWN_POINT, FACINGS } from '../../shared/world.js';
+import { MOVE_SPEED, FACINGS } from '../../shared/world.js';
+import { clampToMap, slideMove, findFreeSpot } from '../../shared/mapInfo.js';
+import { worldMap } from './worldMap.js';
 import { cleanChatText, countCharacters, ChatLimiter } from './chat.js';
 import { moderateMessage } from './moderation.js';
+
+// When checking walls, the server makes the player's feet 1 px smaller than
+// the browser does. Tiny rounding differences then never block an honest
+// player who is standing right against a wall.
+const WALL_CHECK_SHRINK = 1;
 
 // Texts of the notices we send to a player.
 const NOTICE_TOO_FAST = 'You are sending messages too fast';
 const NOTICE_TOO_LONG = 'Message too long';
 const NOTICE_BLOCKED = 'Your message was not sent';
 
-// Headers set by index.js after checking the token. Only index.js sets them.
+// Headers set by index.js after checking the connection. Only index.js sets
+// them (it removes any that a client sent).
 export const PLAYER_ID_HEADER = 'X-Player-Id';
 export const PLAYER_NAME_HEADER = 'X-Player-Name';
+// "1" for a spectator (a logged-out visitor watching, no token).
+export const SPECTATOR_HEADER = 'X-Spectator';
 
 // ---------- Movement check ----------
 // Each player has a "movement allowance" in pixels, like a bucket of water.
@@ -54,8 +69,14 @@ const MAX_REMEMBERED_POSITIONS = 1000;
 
 export class WorldRoom extends Server {
   // No hibernation. While anyone is online, our 10-per-second tick keeps the
-  // object awake anyway, so hibernation would not save anything. When the
-  // room is empty we stop the tick, and Cloudflare can shut the object down.
+  // object awake anyway, so hibernation would not save anything. When no
+  // PLAYERS are left we stop the tick, and when nobody at all is connected,
+  // Cloudflare can shut the object down.
+  // Note: an open spectator connection also keeps the object running (and
+  // counting free-plan run time), even with the tick stopped. That is why
+  // spectators are capped (MAX_SPECTATORS) and closed after SPECTATOR_MAX_MS.
+  // Run time is counted per object, not per connection, so one room can use
+  // at most 24 h × 128 MB = 10,800 GB-s a day, under the free 13,000.
   static options = { hibernate: false };
 
   // Player id → player object (see onConnect for the fields).
@@ -73,9 +94,20 @@ export class WorldRoom extends Server {
   // The setInterval handle of the tick, or null when the tick is stopped.
   tickTimer = null;
 
+  // Spectators: connection id → the timer that closes them after SPECTATOR_MAX_MS.
+  // Spectators are NOT in `players`: they are not counted, not shown, and
+  // they never start the tick.
+  spectators = new Map();
+
   // Called when a WebSocket connection is open.
-  // index.js has already checked the token, the origin and the room name.
+  // index.js has already checked the origin and the room name, and either
+  // the token (players) or the spectator flag (spectators).
   onConnect(connection, ctx) {
+    if (ctx.request.headers.get(SPECTATOR_HEADER) === '1') {
+      this.addSpectator(connection);
+      return;
+    }
+
     const id = ctx.request.headers.get(PLAYER_ID_HEADER);
     const name = decodeName(ctx.request.headers.get(PLAYER_NAME_HEADER));
     if (!id || !name) {
@@ -93,7 +125,11 @@ export class WorldRoom extends Server {
     }
 
     // Start where they were: in this room right now, or when they last left.
-    const start = oldPlayer || this.lastPositions.get(id) || SPAWN_POINT;
+    // Otherwise at the map's spawn point.
+    const remembered = oldPlayer || this.lastPositions.get(id);
+    // A remembered spot may now be inside a wall (if the map changed), so
+    // move it to the nearest free spot. The spawn point is always free already.
+    const start = remembered ? findFreeSpot(worldMap, remembered.x, remembered.y) : worldMap.spawn;
 
     const player = {
       id,
@@ -120,6 +156,8 @@ export class WorldRoom extends Server {
       type: MSG.WELCOME,
       you: id,
       players: [...this.players.values()].map(toPublicPlayer),
+      // Lets the browser check that it has the same map as the server.
+      map: worldMap.fingerprint,
     });
 
     if (oldPlayer) {
@@ -132,9 +170,40 @@ export class WorldRoom extends Server {
     this.startTick();
   }
 
+  // A logged-out visitor wants to watch. They get the same position updates
+  // as players (welcome, join, leave, state), but never chat, and they
+  // cannot send anything (see onMessage).
+  addSpectator(connection) {
+    if (this.spectators.size >= MAX_SPECTATORS) {
+      // Room full of watchers. The close code tells the page not to retry.
+      connection.close(CLOSE_SPECTATORS_FULL, 'Too many spectators');
+      return;
+    }
+
+    // Close it after SPECTATOR_MAX_MS, so a login page left open for hours
+    // does not keep the room running. (onClose removes it from the map.)
+    const timer = setTimeout(() => {
+      connection.close(CLOSE_SPECTATOR_TIME_UP, 'Spectator time is up');
+    }, SPECTATOR_MAX_MS);
+    this.spectators.set(connection.id, timer);
+
+    this.sendTo(connection, {
+      type: MSG.WELCOME,
+      you: null, // not a player
+      players: [...this.players.values()].map(toPublicPlayer),
+      map: worldMap.fingerprint,
+    });
+    // No startTick() here: only players start it. With no players there is
+    // nothing to send anyway (nobody moves).
+  }
+
   // Called for every message from a connection.
   // Anything strange is ignored, never allowed to crash the room.
   onMessage(connection, message) {
+    // Spectators are read-only. Drop everything they send, before any other
+    // work (no parsing, no rate limit counting).
+    if (this.spectators.has(connection.id)) return;
+
     const player = this.getPlayerFor(connection);
     if (!player) return;
 
@@ -223,13 +292,17 @@ export class WorldRoom extends Server {
     // Send right away, not on the tick: chat should feel instant.
     // The sender gets it too, so they see the same text everyone else sees.
     // The name comes from the login token (set in onConnect), never from the client.
-    this.broadcastJson({
-      type: MSG.CHAT,
-      id: player.id,
-      name: player.name,
-      text: finalText,
-      ts: Date.now(),
-    });
+    // Spectators (logged-out visitors) are left out: chat is for players only.
+    this.broadcastJson(
+      {
+        type: MSG.CHAT,
+        id: player.id,
+        name: player.name,
+        text: finalText,
+        ts: Date.now(),
+      },
+      [...this.spectators.keys()],
+    );
   }
 
   // Sends a short notice to one player, but not more often than every 2 seconds.
@@ -269,13 +342,17 @@ export class WorldRoom extends Server {
       newY = player.y + dy * ratio;
     }
 
-    // Keep them inside the map.
-    newX = clamp(newX, 0, WORLD_WIDTH);
-    newY = clamp(newY, 0, WORLD_HEIGHT);
+    // Keep the whole body inside the map.
+    const inside = clampToMap(worldMap, newX, newY);
 
-    player.allowance -= Math.hypot(newX - player.x, newY - player.y);
-    player.x = roundToTenth(newX);
-    player.y = roundToTenth(newY);
+    // Walk there step by step, stopping at walls and sliding along them,
+    // the same way the browser's physics does. A cheater cannot walk
+    // through walls, or hop over a thin wall in one big move.
+    const final = slideMove(worldMap, player.x, player.y, inside.x, inside.y, WALL_CHECK_SHRINK);
+
+    player.allowance -= Math.hypot(final.x - player.x, final.y - player.y);
+    player.x = roundToTenth(final.x);
+    player.y = roundToTenth(final.y);
     player.facing = facing;
     player.moving = moving;
 
@@ -285,6 +362,14 @@ export class WorldRoom extends Server {
 
   // Called when a connection closes (tab closed, network lost, or replaced).
   onClose(connection) {
+    // A spectator left (or was closed): just forget them. They never
+    // touched the player list or the tick.
+    if (this.spectators.has(connection.id)) {
+      clearTimeout(this.spectators.get(connection.id));
+      this.spectators.delete(connection.id);
+      return;
+    }
+
     const id = this.playerIdByConnection.get(connection.id);
     this.playerIdByConnection.delete(connection.id);
     const player = this.players.get(id);
@@ -396,10 +481,6 @@ function decodeName(encoded) {
   } catch {
     return null;
   }
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
 }
 
 // Positions are sent as numbers with one decimal place, to keep messages short.

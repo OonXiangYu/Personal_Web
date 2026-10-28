@@ -100,24 +100,51 @@ export function createAuthForm({ onLoggedIn }) {
 
   applyMode();
 
+  // ---------- Fading the popup in and out ----------
+  // The popup sits on top of the running world. It fades instead of
+  // popping, so going in and out of the game feels smooth.
+  // The time must match the CSS transition on .overlay (style.css).
+  const FADE_MS = 400;
+  let fadeTimer = null;
+
+  function fadeIn() {
+    clearTimeout(fadeTimer);
+    if (!screen.hidden && !screen.classList.contains('is-fading')) return;
+    screen.classList.add('is-fading');
+    screen.hidden = false;
+    // Make the browser draw it once at opacity 0, so the change to
+    // opacity 1 below is animated (instead of happening at once).
+    void screen.offsetWidth;
+    screen.classList.remove('is-fading');
+  }
+
+  function fadeOut() {
+    clearTimeout(fadeTimer);
+    screen.classList.add('is-fading');
+    // After the fade, really hide it, so it cannot catch taps or clicks.
+    fadeTimer = setTimeout(() => {
+      screen.hidden = true;
+    }, FADE_MS);
+  }
+
   return {
     // Shows "Loading…" while we check a saved login.
     showLoading() {
-      screen.hidden = false;
+      fadeIn();
       loading.hidden = false;
       fields.hidden = true;
     },
 
     // Shows the form, with an optional message (for example after an error).
     showForm(message = '') {
-      screen.hidden = false;
+      fadeIn();
       loading.hidden = true;
       fields.hidden = false;
       showError(message);
     },
 
     hide() {
-      screen.hidden = true;
+      fadeOut();
     },
   };
 }

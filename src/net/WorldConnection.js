@@ -4,7 +4,15 @@
 // It does not know about Phaser. The scene decides what to draw.
 
 import PartySocket from 'partysocket';
-import { MSG, PARTY_NAME, DEFAULT_ROOM, CLOSE_REPLACED } from '../../shared/protocol.js';
+import {
+  MSG,
+  PARTY_NAME,
+  DEFAULT_ROOM,
+  CLOSE_REPLACED,
+  CLOSE_SPECTATORS_FULL,
+  CLOSE_SPECTATOR_TIME_UP,
+  SPECTATOR_QUERY_FLAG,
+} from '../../shared/protocol.js';
 import { loadToken } from '../ui/storage.js';
 import { getMe } from '../ui/api.js';
 
@@ -28,6 +36,12 @@ const FAILURES_BEFORE_CHECK = 2;
 // If we still cannot connect after this long, show a "Retry" button.
 const RETRY_BUTTON_AFTER_MS = 30_000;
 
+// A spectator connection gives up after this many failed tries.
+const SPECTATOR_MAX_RETRIES = 5;
+
+// After the server closes with one of these codes, never reconnect by itself.
+const NO_RECONNECT_CODES = [CLOSE_REPLACED, CLOSE_SPECTATORS_FULL, CLOSE_SPECTATOR_TIME_UP];
+
 // The possible connection states. The scene turns these into text.
 export const STATUS = {
   CONNECTING: 'connecting',
@@ -48,8 +62,11 @@ export class WorldConnection {
   //   onMessage(data)    a message from the server (already parsed JSON)
   //   onStatus(status)   the connection state changed (one of STATUS)
   //   onLoginRejected()  our login is no longer valid, go back to the login form
-  constructor({ room = DEFAULT_ROOM, onMessage, onStatus, onLoginRejected }) {
+  // spectator: true for a logged-out visitor watching behind the login form.
+  //   Read-only, no token, and it gives up quietly instead of retrying forever.
+  constructor({ room = DEFAULT_ROOM, spectator = false, onMessage, onStatus, onLoginRejected }) {
     this.room = room;
+    this.spectator = spectator;
     this.onMessage = onMessage;
     this.onStatus = onStatus;
     this.onLoginRejected = onLoginRejected;
@@ -79,15 +96,22 @@ export class WorldConnection {
       host: REALTIME_HOST,
       party: PARTY_NAME,
       room: this.room,
-      // A function, so a fresh token is read on EVERY reconnect
+      // Players: a function, so a fresh token is read on EVERY reconnect
       // (for example after the player logged in again).
       // Browsers cannot set headers on WebSockets, so it goes in the URL.
-      query: () => ({ token: loadToken() }),
+      // Spectators: no token, just the flag.
+      query: this.spectator
+        ? { [SPECTATOR_QUERY_FLAG]: '1' }
+        : () => ({ token: loadToken() }),
+      // Spectators give up after a few failed tries. Watching is only a nice
+      // extra, and each try costs a request on the free plan.
+      maxRetries: this.spectator ? SPECTATOR_MAX_RETRIES : Infinity,
       // Do not keep messages while offline. Old positions are useless later.
       maxEnqueuedMessages: 0,
-      // After CLOSE_REPLACED (this account opened the game somewhere else),
-      // do not reconnect. Otherwise the two tabs would kick each other forever.
-      shouldReconnectOnClose: (event) => event.code !== CLOSE_REPLACED,
+      // After these close codes, do NOT reconnect (see shared/protocol.js):
+      //   CLOSE_REPLACED: otherwise two tabs would kick each other out forever.
+      //   CLOSE_SPECTATORS_FULL / CLOSE_SPECTATOR_TIME_UP: the room said no.
+      shouldReconnectOnClose: (event) => !NO_RECONNECT_CODES.includes(event.code),
     });
 
     this.socket.addEventListener('open', () => this.handleOpen());
@@ -155,6 +179,14 @@ export class WorldConnection {
 
     if (event.code === CLOSE_REPLACED) {
       this.setStatus(STATUS.REPLACED);
+      return;
+    }
+
+    // Spectators do not try to find out why: they have no login to check.
+    // The world just keeps drifting without players (partysocket retries a
+    // few times by itself, unless the room said no with a close code).
+    if (this.spectator) {
+      this.setStatus(STATUS.OFFLINE);
       return;
     }
     // Once we know the server rejects us, stay on that message.

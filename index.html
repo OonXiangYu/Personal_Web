@@ -10,7 +10,17 @@
     <meta charset="UTF-8" />
     <!-- viewport-fit=cover lets the game use the whole screen on phones with a notch. -->
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Pixel World</title>
+    <title>Oscar World</title>
+    <!-- Start downloading the pixel font right away (it is 685 KB), instead of
+         waiting until the CSS is read. "crossorigin" is needed for fonts, or the
+         browser downloads the file twice. The @font-face rule is in src/ui/style.css. -->
+    <link
+      rel="preload"
+      href="/assets/fonts/fusion-pixel-12px-proportional-zh_hans-v2026.10.25.otf.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
   </head>
   <body>
     <!-- Phaser puts its canvas in here. -->
@@ -53,7 +63,7 @@
     <!-- Login / register screen. Shown when the player is not logged in. -->
     <div id="auth-screen" class="overlay">
       <form id="auth-form" class="card" novalidate>
-        <h1>Pixel World</h1>
+        <h1>Oscar World</h1>
 
         <!-- Shown while we check a saved login on page load. -->
         <p id="auth-loading" class="loading">Loading…</p>

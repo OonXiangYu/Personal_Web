@@ -1,7 +1,10 @@
 // Start-up code for the page.
-// 1. If there is a saved token, ask the API who it belongs to (auto login).
-// 2. Otherwise show the login form.
-// 3. When the player is logged in, start the game. On logout, stop it.
+// 1. Start the game right away. Behind the login form, the world runs as a
+//    "spectator": the map and other players walking, but you cannot play.
+// 2. If there is a saved token, ask the API who it belongs to (auto login).
+//    Otherwise show the login form (a popup on top of the world).
+// 3. After login, the popup fades out and the same game switches to player
+//    mode. After logout, it switches back. The page never reloads.
 
 import './ui/style.css';
 import { createAuthForm } from './ui/authForm.js';
@@ -13,36 +16,33 @@ const logoutButton = document.getElementById('logout-button');
 
 const LOGIN_EXPIRED_MESSAGE = 'Your login has expired. Please log in again.';
 
-// The running Phaser game, or null when nobody is logged in.
-let game = null;
+// The game starts now, before login, so the world shows behind the form.
+const world = createGame('game', {
+  onLoginRejected: () => logout(LOGIN_EXPIRED_MESSAGE),
+});
 
 const authForm = createAuthForm({
   onLoggedIn({ token, user }) {
     saveToken(token);
-    startGame(user);
+    enterGame(user);
   },
 });
 
-// Hides the form and starts the game for this user.
-function startGame(user) {
+// Hides the popup and makes the visitor a player in the running world.
+function enterGame(user) {
   authForm.hide();
   logoutButton.hidden = false;
-  game = createGame('game', user, {
-    onLoginRejected: () => logout(LOGIN_EXPIRED_MESSAGE),
-  });
+  world.setUser(user);
 }
 
-// Stops the game and goes back to the login form.
+// Goes back to the login popup. The world keeps running behind it
+// (switching back to spectator mode).
 // `message` is shown in the form (for example why the player was logged out).
 function logout(message = '') {
   clearToken();
-  if (game) {
-    // true = also remove the canvas from the page.
-    // This also closes the real-time connection (see WorldScene).
-    game.destroy(true);
-    game = null;
-  }
   logoutButton.hidden = true;
+  // This also closes the player connection (see WorldScene's clean-up).
+  world.setUser(null);
   authForm.showForm(message);
 }
 
@@ -60,7 +60,7 @@ async function start() {
   authForm.showLoading();
   try {
     const { user } = await getMe(token);
-    startGame(user);
+    enterGame(user);
   } catch (err) {
     // 401 means the token is expired or invalid, so throw it away.
     // For other errors (no internet, server down) keep it: it may still be good.

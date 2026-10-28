@@ -1,20 +1,25 @@
 // Creates the Phaser game with our settings.
-// main.js calls this after the player logs in.
+// main.js calls this once, when the page loads, BEFORE anyone logs in:
+// the world runs behind the login form (as a spectator), and after login
+// the same game switches to player mode, without reloading the page.
 
 import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene.js';
 import { WorldScene } from './scenes/WorldScene.js';
 import { watchScreenSize } from './watchScreenSize.js';
 
-// Starts a new game inside the element with id `parentId`.
-// `user` is { id, username } from the API. Scenes read it from the registry.
+// Starts the game inside the element with id `parentId`.
 // `onLoginRejected` is called when the login is no longer valid
 // (for example it expired). main.js then shows the login form.
-export function createGame(parentId, user, { onLoginRejected }) {
-  return new Phaser.Game({
+// Returns { game, setUser }. Call setUser(user) after login and
+// setUser(null) after logout.
+export function createGame(parentId, { onLoginRejected }) {
+  const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: parentId,
-    backgroundColor: '#1b1b24',
+    // Plain black: shown outside the map when the player is near an edge
+    // (the camera always keeps the player in the middle).
+    backgroundColor: '#000000',
 
     // Keep pixel art sharp: no smoothing when scaling, and draw at whole pixels.
     pixelArt: true,
@@ -40,19 +45,39 @@ export function createGame(parentId, user, { onLoginRejected }) {
     scene: [BootScene, WorldScene],
 
     callbacks: {
-      // Runs before any scene starts, so the user is ready when scenes need it.
-      preBoot(game) {
-        game.registry.set('user', user);
-        game.registry.set('onLoginRejected', onLoginRejected);
+      // Runs before any scene starts.
+      preBoot(phaserGame) {
+        // null = nobody logged in yet, so WorldScene starts as a spectator.
+        phaserGame.registry.set('user', null);
+        phaserGame.registry.set('onLoginRejected', onLoginRejected);
       },
 
       // Runs after the canvas exists. We can only resize it after this point.
-      postBoot(game) {
+      postBoot(phaserGame) {
         const container = document.getElementById(parentId);
-        const stopWatching = watchScreenSize(game, container);
-        // Stop listening when the game is destroyed (on logout).
+        const stopWatching = watchScreenSize(phaserGame, container);
         game.events.once(Phaser.Core.Events.DESTROY, stopWatching);
       },
     },
   });
+
+  // Switches between spectator mode (user = null) and player mode (user = { id, username }).
+  // WorldScene reads the user when it starts, so we restart it. The map and
+  // images are already loaded, so this is quick, and its clean-up code closes
+  // the old connection and removes the old HTML (chat, names...).
+  function setUser(user) {
+    game.registry.set('user', user);
+    if (game.scene.isActive('WorldScene')) {
+      const world = game.scene.getScene('WorldScene');
+      // Remember where the camera is, so the next mode can glide from there
+      // instead of jumping (see WorldScene).
+      const camera = world.cameras.main;
+      game.registry.set('cameraFrom', { x: camera.midPoint.x, y: camera.midPoint.y });
+      world.scene.restart();
+    }
+    // If the game is still loading, WorldScene simply starts in the right
+    // mode when loading is done (BootScene starts it).
+  }
+
+  return { game, setUser };
 }

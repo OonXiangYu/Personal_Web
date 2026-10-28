@@ -32,6 +32,11 @@ export class RemotePlayers {
     return this.entries.size;
   }
 
+  // The ids of all remote players (the spectator camera picks one to follow).
+  ids() {
+    return [...this.entries.keys()];
+  }
+
   // The sprite of a remote player (for the name label position), or null.
   getSprite(id) {
     return this.entries.get(id)?.player.sprite || null;

@@ -1,15 +1,65 @@
 /* Page styles: full-screen game, the login form, the logout button and the joystick. */
 
+/* ---------- Pixel font ----------
+   Fusion Pixel Font, 12px design, Simplified Chinese version, by TakWolf.
+   License: SIL Open Font License 1.1 (see public/assets/fonts/ and README > Credits).
+   It covers Chinese, English, numbers and symbols. Emoji use the system font.
+
+   Pixel fonts are only sharp at whole multiples of their design size,
+   so ALL text in this file uses only 12px, 24px or 36px.
+
+   font-display: swap shows a normal font right away, then swaps to the
+   pixel font when it has loaded (it is 685 KB, so it can take a moment
+   on the first visit). index.html also preloads it, so it starts early.
+
+   The version is in the file name because Vercel tells browsers to keep
+   font files for a year (see vercel.json). A new version = a new file name,
+   so players get the new file. */
+@font-face {
+  font-family: 'Fusion Pixel';
+  src: url('/assets/fonts/fusion-pixel-12px-proportional-zh_hans-v2026.10.25.otf.woff2') format('woff2');
+  font-display: swap;
+}
+
+:root {
+  /* The pixel font first; normal fonts (with Chinese) as the fallback while
+     it loads, or if it fails. */
+  --font: 'Fusion Pixel', Arial, 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif;
+
+  /* How see-through the LOGIN POPUP is, so the live world shows behind it.
+     0 = fully see-through, 1 = solid. Only the login popup uses these
+     (not the chat or status box). Lower = more world, but harder to read. */
+  --popup-card-opacity: 0.6; /* the login card */
+  --popup-input-opacity: 0.5; /* the username / password boxes on it */
+}
+
 html,
 body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #1b1b24;
+  background: #000;
   color: #f2f2f2;
-  font-family: Arial, 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 16px;
+  /* Turn off smoothing, so pixel edges stay hard (works on Mac browsers;
+     other systems ignore it). */
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: grayscale;
+  /* The font has only one weight and no italic. Without this, the browser
+     fakes bold and italic by smearing the pixels, which looks blurry. */
+  font-synthesis: none;
   /* Stop the "pull to refresh" bounce on phones while playing. */
   overscroll-behavior: none;
+}
+
+/* Inputs and buttons do not take the page font by default. Make them. */
+button,
+input {
+  font-family: inherit;
+  font-weight: normal;
+  -webkit-font-smoothing: none;
 }
 
 /* The game fills the whole visible screen. Phaser RESIZE mode reads this size.
@@ -48,10 +98,21 @@ body {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgba(10, 10, 20, 0.85);
+  /* A see-through dark layer: the live world shows behind the login popup,
+     but darker, so the form is easy to read. No blur: blur is slow on phones. */
+  background: rgba(0, 0, 0, 0.45);
   /* If the phone keyboard makes the screen short, let the form scroll. */
   overflow-y: auto;
   z-index: 10;
+  /* Fade in and out (0.4 s, matches FADE_MS in authForm.js). */
+  opacity: 1;
+  transition: opacity 0.4s;
+}
+
+.overlay.is-fading {
+  opacity: 0;
+  /* A popup that is fading out must not catch taps meant for the game. */
+  pointer-events: none;
 }
 
 .card {
@@ -59,43 +120,62 @@ body {
   max-width: 320px;
   padding: 24px;
   border-radius: 8px;
-  background: #2a2a3a;
+  /* #2a2a3a (dark blue-grey), see-through: see --popup-card-opacity at the top. */
+  background: rgba(42, 42, 58, var(--popup-card-opacity));
   box-sizing: border-box;
 }
 
+/* On small phones, use less padding around and inside the card, so the big
+   24px text still fits without side scrolling. */
+@media (max-width: 400px) {
+  .overlay {
+    padding: 8px;
+  }
+  .card {
+    padding: 16px;
+  }
+}
+
 .card h1 {
-  margin: 0 0 16px;
-  font-size: 24px;
+  margin: 0 0 12px;
+  font-size: 36px;
+  line-height: 48px;
+  font-weight: normal;
   text-align: center;
 }
 
 .card label {
   display: block;
   margin: 12px 0 4px;
-  font-size: 14px;
+  font-size: 24px;
+  line-height: 32px;
 }
 
 .card input {
   width: 100%;
   box-sizing: border-box;
-  padding: 10px;
+  padding: 8px;
   border: 1px solid #555;
   border-radius: 4px;
-  background: #15151f;
+  /* #15151f (near black), see-through: see --popup-input-opacity at the top.
+     (The in-game chat input uses the same colour, but solid; it is not changed.) */
+  background: rgba(21, 21, 31, var(--popup-input-opacity));
   color: #fff;
-  /* 16px or more stops iPhone Safari from zooming in when the input is tapped. */
-  font-size: 16px;
+  /* 24px (at least 16px) also stops iPhone Safari from zooming in when the input is tapped. */
+  font-size: 24px;
+  line-height: 32px;
 }
 
 .card button {
   width: 100%;
   margin-top: 12px;
-  padding: 10px;
+  padding: 8px;
   border: none;
   border-radius: 4px;
   background: #4c8bf5;
   color: #fff;
-  font-size: 16px;
+  font-size: 24px;
+  line-height: 32px;
   cursor: pointer;
 }
 
@@ -107,14 +187,21 @@ body {
 .card .link-button {
   background: none;
   color: #9bbcff;
-  font-size: 14px;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .error {
-  min-height: 1.2em;
+  min-height: 16px;
   margin: 12px 0 0;
   color: #ff8080;
-  font-size: 14px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.loading {
+  font-size: 24px;
+  line-height: 32px;
 }
 
 .loading {
@@ -133,7 +220,7 @@ body {
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.5);
   color: #fff;
-  font-size: 14px;
+  font-size: 12px;
   z-index: 5;
 }
 
@@ -149,7 +236,7 @@ body {
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.5);
   color: #fff;
-  font-size: 13px;
+  font-size: 12px;
   z-index: 5;
 }
 
@@ -160,7 +247,7 @@ body {
   border-radius: 4px;
   background: #4c8bf5;
   color: #fff;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 /* ---------- Player names and chat bubbles (HTML overlay) ---------- */
@@ -187,17 +274,9 @@ body {
   will-change: transform;
 }
 
-/* TODO: use a pixel font that has Chinese characters (for example Fusion Pixel
-   or Zpix) for names and bubbles, to match the pixel-art style. For now we use
-   normal system fonts, which are sharp and support Chinese everywhere. */
-.player-name,
-.chat-bubble {
-  font-family: Arial, 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif;
-}
-
 .player-name {
   font-size: 12px;
-  line-height: 1.2;
+  line-height: 16px;
   color: #fff;
   white-space: nowrap;
   /* A dark outline (4 shadows) keeps the name readable on any ground color. */
@@ -222,8 +301,8 @@ body {
   border-radius: 6px;
   background: #fff;
   color: #1b1b24;
-  font-size: 13px;
-  line-height: 1.3;
+  font-size: 12px;
+  line-height: 16px;
   text-align: center;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   transition: opacity 0.4s;
@@ -268,7 +347,7 @@ body {
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.45);
   color: #fff;
-  font-size: 13px;
+  font-size: 12px;
   z-index: 6;
 }
 
@@ -279,7 +358,7 @@ body {
   border: none;
   background: none;
   color: #fff;
-  font-size: 13px;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
@@ -309,8 +388,8 @@ body {
 }
 
 .chat-line.is-system {
+  /* Grey, not italic: the pixel font has no italic. */
   color: #b5b5c0;
-  font-style: italic;
 }
 
 /* ---------- Chat box ---------- */
@@ -342,8 +421,9 @@ body {
   border-radius: 4px;
   background: #15151f;
   color: #fff;
-  /* 16px or more stops iPhone Safari from zooming in when the input is tapped. */
-  font-size: 16px;
+  /* 24px (at least 16px) stops iPhone Safari from zooming in when the input is tapped. */
+  font-size: 24px;
+  line-height: 32px;
 }
 
 #chat-counter {
@@ -357,7 +437,8 @@ body {
   border-radius: 4px;
   background: #4c8bf5;
   color: #fff;
-  font-size: 14px;
+  font-size: 24px;
+  line-height: 32px;
 }
 
 #chat-notice {
@@ -370,7 +451,7 @@ body {
   border-radius: 4px;
   background: rgba(180, 40, 40, 0.9);
   color: #fff;
-  font-size: 13px;
+  font-size: 12px;
   text-align: center;
   z-index: 21;
   pointer-events: none;
@@ -387,7 +468,7 @@ body {
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.45);
   color: #fff;
-  font-size: 14px;
+  font-size: 12px;
   z-index: 6;
 }
 

@@ -18,6 +18,10 @@
   // Never edit an old migration. If you add another class later, add a new entry with tag "v2".
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorldRoom"] }],
 
+  // Lets the code `import` the Tiled map (.tmj) as text, so the server reads
+  // the SAME map file as the browser (see src/worldMap.js).
+  "rules": [{ "type": "Text", "globs": ["**/*.tmj"], "fallthrough": true }],
+
   "vars": {
     // Websites that may connect, separated by commas, no spaces, no "/" at the end.
     // To allow another site (for example a Vercel preview URL), add it like this:
