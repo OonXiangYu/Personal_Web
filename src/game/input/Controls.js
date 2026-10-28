@@ -26,8 +26,9 @@ export class Controls {
       false,
     );
 
-    // Only show the joystick on devices with a touch screen.
-    this.joystick = isTouchDevice() ? new VirtualJoystick() : null;
+    // Always create the joystick. It shows or hides itself depending on
+    // whether this is a touch device (see VirtualJoystick.js).
+    this.joystick = new VirtualJoystick();
 
     // The joystick is HTML outside of Phaser, so we must remove it ourselves
     // when the scene stops or the game is destroyed (for example on logout).
@@ -68,9 +69,4 @@ export class Controls {
       this.joystick = null;
     }
   }
-}
-
-// True if the device has a touch screen (phones, tablets, some laptops).
-function isTouchDevice() {
-  return navigator.maxTouchPoints > 0 || 'ontouchstart' in window;
 }

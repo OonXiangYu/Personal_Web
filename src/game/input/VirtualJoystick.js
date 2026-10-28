@@ -3,19 +3,27 @@
 //   - CSS keeps it in the bottom-left corner after a resize or rotation
 //   - the camera zoom does not change its size
 // It only reports a direction. Controls.js decides what to do with it.
+// It starts hidden and shows itself when the device looks like a touch device.
 
 // Small pushes near the center are ignored, so a resting thumb does not
 // make the player slowly drift.
 const DEAD_ZONE = 0.2;
 
+// "coarse" pointer = the main input is a finger, not a mouse.
+const TOUCH_MEDIA_QUERY = '(pointer: coarse)';
+
 export class VirtualJoystick {
   constructor() {
     this.base = document.createElement('div');
     this.base.className = 'joystick-base';
+    this.base.hidden = true;
     this.knob = document.createElement('div');
     this.knob.className = 'joystick-knob';
     this.base.appendChild(this.knob);
     document.body.appendChild(this.base);
+
+    // True after the first touch anywhere on the page.
+    this.touchSeen = false;
 
     // Current direction. x and y go from -1 to 1.
     this.vector = { x: 0, y: 0 };
@@ -34,6 +42,47 @@ export class VirtualJoystick {
     this.base.addEventListener('pointermove', this.onPointerMove);
     this.base.addEventListener('pointerup', this.onPointerUp);
     this.base.addEventListener('pointercancel', this.onPointerUp);
+
+    // We do not decide "touch device or not" only once at page load,
+    // because the answer can change: Chrome device mode can switch from
+    // desktop to phone, and a laptop can have both a mouse and a touch screen.
+    this.updateVisibility = this.updateVisibility.bind(this);
+    this.onFirstTouch = this.onFirstTouch.bind(this);
+
+    // 1. The media query. Its "change" event fires when the main input
+    //    switches between mouse and finger.
+    this.touchQuery = window.matchMedia(TOUCH_MEDIA_QUERY);
+    this.touchQuery.addEventListener('change', this.updateVisibility);
+
+    // 2. The first real touch. Some touch devices still report a "fine"
+    //    pointer, so a touch is the surest sign. "capture" makes us hear it
+    //    even if another element stops the event.
+    window.addEventListener('touchstart', this.onFirstTouch, { capture: true, passive: true });
+
+    this.updateVisibility();
+  }
+
+  onFirstTouch() {
+    this.touchSeen = true;
+    window.removeEventListener('touchstart', this.onFirstTouch, { capture: true });
+    this.updateVisibility();
+  }
+
+  // Shows the joystick on touch devices, hides it otherwise.
+  updateVisibility() {
+    const show = this.touchQuery.matches || this.touchSeen;
+    this.base.hidden = !show;
+    if (!show) {
+      // Do not keep walking if the joystick disappears while held.
+      this.resetKnob();
+    }
+  }
+
+  // Puts the knob back in the middle and stops the movement.
+  resetKnob() {
+    this.pointerId = null;
+    this.vector = { x: 0, y: 0 };
+    this.knob.style.transform = '';
   }
 
   onPointerDown(event) {
@@ -53,9 +102,7 @@ export class VirtualJoystick {
 
   onPointerUp(event) {
     if (event.pointerId !== this.pointerId) return;
-    this.pointerId = null;
-    this.vector = { x: 0, y: 0 };
-    this.knob.style.transform = '';
+    this.resetKnob();
   }
 
   // Works out the direction from where the finger is.
@@ -87,8 +134,10 @@ export class VirtualJoystick {
     return this.vector;
   }
 
-  // Removes the joystick from the page.
+  // Removes the joystick from the page and stops all its listeners.
   destroy() {
+    this.touchQuery.removeEventListener('change', this.updateVisibility);
+    window.removeEventListener('touchstart', this.onFirstTouch, { capture: true });
     this.base.remove();
   }
 }

@@ -12,12 +12,26 @@ body {
   overscroll-behavior: none;
 }
 
-/* The game fills the whole window. Phaser RESIZE mode reads this size. */
+/* The game fills the whole visible screen. Phaser RESIZE mode reads this size.
+   100dvh = the height you can really see on a phone, which changes when the
+   address bar hides or the phone rotates. Old browsers that do not know dvh
+   ignore that line and use 100vh instead. */
 #game {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
   /* Stop the browser from scrolling or zooming when the player touches the game. */
   touch-action: none;
+}
+
+/* Phaser sets the canvas size in pixels. display:block removes the small gap
+   under inline elements, which could make the page scroll by a few pixels. */
+#game canvas {
+  display: block;
 }
 
 /* Use our own [hidden] rule, so display:flex below cannot override it. */

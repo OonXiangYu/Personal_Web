@@ -4,6 +4,7 @@
 import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene.js';
 import { WorldScene } from './scenes/WorldScene.js';
+import { watchScreenSize } from './watchScreenSize.js';
 
 // Starts a new game inside the element with id `parentId`.
 // `user` is { id, username } from the API. Scenes read it from the registry.
@@ -21,9 +22,8 @@ export function createGame(parentId, user) {
       // RESIZE makes the canvas always fill the whole window (no empty bars),
       // on PC and on phones in both portrait and landscape.
       // The camera zoom (see WorldScene) decides how much of the world we see.
+      // watchScreenSize.js makes sure it notices every size change.
       mode: Phaser.Scale.RESIZE,
-      width: window.innerWidth,
-      height: window.innerHeight,
     },
 
     physics: {
@@ -41,6 +41,14 @@ export function createGame(parentId, user) {
       // Runs before any scene starts, so the user is ready when scenes need it.
       preBoot(game) {
         game.registry.set('user', user);
+      },
+
+      // Runs after the canvas exists. We can only resize it after this point.
+      postBoot(game) {
+        const container = document.getElementById(parentId);
+        const stopWatching = watchScreenSize(game, container);
+        // Stop listening when the game is destroyed (on logout).
+        game.events.once(Phaser.Core.Events.DESTROY, stopWatching);
       },
     },
   });
