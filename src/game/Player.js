@@ -1,9 +1,11 @@
 // One character in the world: the sprite, its animations and the name label.
-// Right now only the local player uses it. Later, players that come from the
-// network can use the same class: call playAnimationFor() with their movement
-// instead of move().
+// Used for BOTH kinds of players:
+//   - the local player: has physics, moved with move()
+//   - remote players (from the network): no physics, moved with
+//     setPosition() and showState() using the data the server sends
 
 import Phaser from 'phaser';
+import { MOVE_SPEED } from '../../shared/world.js';
 
 // ---------- Sprite sheet layout ----------
 // Measured from the PNG files: each file is 768 x 80 pixels,
@@ -15,10 +17,6 @@ const FRAME_COUNT = 8;
 // ---------- Animation speed (frames per second) ----------
 const IDLE_FRAME_RATE = 8;
 const RUN_FRAME_RATE = 12;
-
-// ---------- Movement ----------
-// Speed in game pixels per second.
-const MOVE_SPEED = 80;
 
 // ---------- Hit box ----------
 // The character only fills a small part of the 96 x 80 frame
@@ -85,15 +83,23 @@ export class Player {
     }
   }
 
-  constructor(scene, x, y, name) {
+  // options.physics: true for the local player. Remote players do not need
+  // physics, because the server tells us exactly where they are.
+  constructor(scene, x, y, name, { physics = true } = {}) {
     this.scene = scene;
 
     // The direction the player last moved in. Used to pick the idle animation.
     this.facing = 'down';
+    // True while the run animation is playing.
+    this.moving = false;
 
-    this.sprite = scene.physics.add.sprite(x, y, 'player-idle-down');
-    this.sprite.body.setSize(BODY_WIDTH, BODY_HEIGHT, false);
-    this.sprite.body.setOffset(BODY_OFFSET_X, BODY_OFFSET_Y);
+    if (physics) {
+      this.sprite = scene.physics.add.sprite(x, y, 'player-idle-down');
+      this.sprite.body.setSize(BODY_WIDTH, BODY_HEIGHT, false);
+      this.sprite.body.setOffset(BODY_OFFSET_X, BODY_OFFSET_Y);
+    } else {
+      this.sprite = scene.add.sprite(x, y, 'player-idle-down');
+    }
     this.sprite.play('idle-down');
 
     // Origin (0.5, 1) = the label's bottom center sits at its position.
@@ -116,13 +122,30 @@ export class Player {
   // Moving: run in that direction. Stopped: idle, facing the last direction.
   playAnimationFor(direction) {
     const isMoving = direction.x !== 0 || direction.y !== 0;
-    if (isMoving) {
-      this.facing = pickFacing(direction);
-    }
-    const key = `${isMoving ? 'run' : 'idle'}-${this.facing}`;
+    const facing = isMoving ? pickFacing(direction) : this.facing;
+    this.showState(facing, isMoving);
+  }
+
+  // Shows the run or idle animation for a facing direction.
+  // Remote players call this directly with the values from the server.
+  showState(facing, moving) {
+    this.facing = facing;
+    this.moving = moving;
+    const key = `${moving ? 'run' : 'idle'}-${facing}`;
     // true = do nothing if this animation is already playing.
     // Without it, the animation would restart from frame 0 every frame.
     this.sprite.play(key, true);
+  }
+
+  // Puts the player at a position (used for remote players and the welcome message).
+  setPosition(x, y) {
+    if (this.sprite.body) {
+      // For a physics sprite, reset() moves the body too and clears its
+      // speed. Moving only the sprite would confuse the physics engine.
+      this.sprite.body.reset(x, y);
+    } else {
+      this.sprite.setPosition(x, y);
+    }
   }
 
   // Keeps the label above the head and sorts the sprite by height on screen.

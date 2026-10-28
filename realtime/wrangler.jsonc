@@ -1,0 +1,37 @@
+// Settings for the real-time server (a Cloudflare Worker with a Durable Object).
+// Deploy from this folder with: npx wrangler deploy
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pixelworld-realtime",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+
+  // The Durable Object that runs one game room.
+  // The binding name "World" becomes the party name "world" in the URL:
+  //   /parties/world/<room name>
+  "durable_objects": {
+    "bindings": [{ "name": "World", "class_name": "WorldRoom" }]
+  },
+
+  // The Workers FREE plan only allows SQLite-backed Durable Objects,
+  // so we must use "new_sqlite_classes" (not "new_classes").
+  // Never edit an old migration. If you add another class later, add a new entry with tag "v2".
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorldRoom"] }],
+
+  "vars": {
+    // Websites that may connect, separated by commas, no spaces, no "/" at the end.
+    // To allow another site (for example a Vercel preview URL), add it like this:
+    //   "https://oscar-world.vercel.app,http://localhost:3000,https://my-preview.vercel.app"
+    "ALLOWED_ORIGINS": "https://oscar-world.vercel.app,http://localhost:3000"
+  },
+
+  // Keep our console.log / console.error lines in the Cloudflare dashboard
+  // (Workers → pixelworld-realtime → Logs).
+  // "invocation_logs": false turns off Cloudflare's automatic log of every
+  // request. That log saves the full URL, and our WebSocket URL contains the
+  // login token (?token=...). We must never store tokens in logs.
+  "observability": {
+    "enabled": true,
+    "logs": { "invocation_logs": false }
+  }
+}

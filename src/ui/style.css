@@ -137,6 +137,32 @@ body {
   z-index: 5;
 }
 
+/* ---------- Connection status (top-left) ---------- */
+
+#net-status {
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top));
+  left: calc(8px + env(safe-area-inset-left));
+  /* Leave room for the Log out button on the right, even on small phones. */
+  max-width: calc(100% - 120px);
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 13px;
+  z-index: 5;
+}
+
+#net-status-button {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 4px;
+  background: #4c8bf5;
+  color: #fff;
+  font-size: 13px;
+}
+
 /* ---------- Virtual joystick (touch devices only) ---------- */
 
 /* CSS keeps it in the bottom-left corner, so it stays in place after a resize or rotation. */

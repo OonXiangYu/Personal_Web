@@ -8,7 +8,9 @@ import { watchScreenSize } from './watchScreenSize.js';
 
 // Starts a new game inside the element with id `parentId`.
 // `user` is { id, username } from the API. Scenes read it from the registry.
-export function createGame(parentId, user) {
+// `onLoginRejected` is called when the login is no longer valid
+// (for example it expired). main.js then shows the login form.
+export function createGame(parentId, user, { onLoginRejected }) {
   return new Phaser.Game({
     type: Phaser.AUTO,
     parent: parentId,
@@ -41,6 +43,7 @@ export function createGame(parentId, user) {
       // Runs before any scene starts, so the user is ready when scenes need it.
       preBoot(game) {
         game.registry.set('user', user);
+        game.registry.set('onLoginRejected', onLoginRejected);
       },
 
       // Runs after the canvas exists. We can only resize it after this point.

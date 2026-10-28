@@ -11,6 +11,8 @@ import { createGame } from './game/createGame.js';
 
 const logoutButton = document.getElementById('logout-button');
 
+const LOGIN_EXPIRED_MESSAGE = 'Your login has expired. Please log in again.';
+
 // The running Phaser game, or null when nobody is logged in.
 let game = null;
 
@@ -25,22 +27,27 @@ const authForm = createAuthForm({
 function startGame(user) {
   authForm.hide();
   logoutButton.hidden = false;
-  game = createGame('game', user);
+  game = createGame('game', user, {
+    onLoginRejected: () => logout(LOGIN_EXPIRED_MESSAGE),
+  });
 }
 
 // Stops the game and goes back to the login form.
-function logout() {
+// `message` is shown in the form (for example why the player was logged out).
+function logout(message = '') {
   clearToken();
   if (game) {
     // true = also remove the canvas from the page.
+    // This also closes the real-time connection (see WorldScene).
     game.destroy(true);
     game = null;
   }
   logoutButton.hidden = true;
-  authForm.showForm();
+  authForm.showForm(message);
 }
 
-logoutButton.addEventListener('click', logout);
+// Not `addEventListener('click', logout)`: that would pass the click event as `message`.
+logoutButton.addEventListener('click', () => logout());
 
 // Runs once when the page loads.
 async function start() {
@@ -59,7 +66,7 @@ async function start() {
     // For other errors (no internet, server down) keep it: it may still be good.
     if (err.status === 401) {
       clearToken();
-      authForm.showForm();
+      authForm.showForm(LOGIN_EXPIRED_MESSAGE);
     } else {
       authForm.showForm(err.message);
     }

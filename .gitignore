@@ -13,6 +13,14 @@ dist
 # But keep the example file, it has no real values.
 !.env.example
 
+# Secret file for the real-time server (`wrangler dev`). Never commit it.
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Wrangler's local cache and dry-run output
+.wrangler
+
 # Editor and system files
 .DS_Store
 Thumbs.db

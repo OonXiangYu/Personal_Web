@@ -1,31 +1,37 @@
 // Saves the login token in localStorage.
 // localStorage can throw an error (for example in some private browsing modes,
 // or when storage is full or blocked). So every call is wrapped in try/catch.
-// If saving fails, the game still works; the player just has to log in again
-// after a refresh.
+// We also keep a copy in memory. If saving fails, the game still works for
+// this page (the real-time connection needs the token on every reconnect);
+// the player just has to log in again after a refresh.
 
 const TOKEN_KEY = 'pixelworld.token';
 
-// Returns the saved token, or null if there is none or storage fails.
+// The token for this page, even if localStorage does not work.
+let memoryToken = null;
+
+// Returns the saved token, or null if there is none.
 export function loadToken() {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return localStorage.getItem(TOKEN_KEY) || memoryToken;
   } catch {
-    return null;
+    return memoryToken;
   }
 }
 
-// Saves the token. Does nothing if storage fails.
+// Saves the token.
 export function saveToken(token) {
+  memoryToken = token;
   try {
     localStorage.setItem(TOKEN_KEY, token);
   } catch {
-    // Ignore. See the note at the top of the file.
+    // Ignore. The memory copy still works. See the note at the top of the file.
   }
 }
 
 // Removes the token (used on logout or when the token is no longer valid).
 export function clearToken() {
+  memoryToken = null;
   try {
     localStorage.removeItem(TOKEN_KEY);
   } catch {

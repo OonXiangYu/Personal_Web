@@ -1,0 +1,5 @@
+# Copy this file to ".dev.vars" for `npx wrangler dev`. Never commit the real file.
+
+# Must be EXACTLY the same JWT_SECRET as the Vercel site uses (in .env.local),
+# or the game server will refuse every login.
+JWT_SECRET=
