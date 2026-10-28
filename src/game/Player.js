@@ -1,4 +1,5 @@
-// One character in the world: the sprite, its animations and the name label.
+// One character in the world: the sprite and its animations.
+// The name label and chat bubble are HTML, drawn by src/ui/PlayerOverlay.js.
 // Used for BOTH kinds of players:
 //   - the local player: has physics, moved with move()
 //   - remote players (from the network): no physics, moved with
@@ -28,21 +29,11 @@ const BODY_HEIGHT = 8;
 const BODY_OFFSET_X = (FRAME_WIDTH - BODY_WIDTH) / 2;
 const BODY_OFFSET_Y = 51;
 
-// ---------- Name label ----------
-// Distance from the sprite center up to the bottom of the name label.
-// The head top is about 16 pixels above the center, so 18 leaves a small gap.
-// Later the chat bubble will go above this label.
-const LABEL_GAP = 18;
-// Labels are drawn above every character.
-const LABEL_DEPTH = 1_000_000;
-const LABEL_STYLE = {
-  fontFamily: 'Arial, "Microsoft YaHei", "PingFang SC", sans-serif',
-  fontSize: '10px',
-  color: '#ffffff',
-  // A dark outline keeps the name readable on any ground color.
-  stroke: '#000000',
-  strokeThickness: 3,
-};
+// ---------- Name label position ----------
+// Distance (in game pixels) from the sprite center up to the bottom of the
+// name label. The head top is about 16 pixels above the center, so 18 leaves
+// a small gap. PlayerOverlay.js uses it to place the name and chat bubble.
+export const LABEL_OFFSET_Y = 18;
 
 const SPRITE_FOLDER = 'assets/sprites/player';
 const DIRECTIONS = ['down', 'left', 'right', 'up'];
@@ -85,7 +76,7 @@ export class Player {
 
   // options.physics: true for the local player. Remote players do not need
   // physics, because the server tells us exactly where they are.
-  constructor(scene, x, y, name, { physics = true } = {}) {
+  constructor(scene, x, y, { physics = true } = {}) {
     this.scene = scene;
 
     // The direction the player last moved in. Used to pick the idle animation.
@@ -102,13 +93,9 @@ export class Player {
     }
     this.sprite.play('idle-down');
 
-    // Origin (0.5, 1) = the label's bottom center sits at its position.
-    this.label = scene.add.text(x, y - LABEL_GAP, name, LABEL_STYLE).setOrigin(0.5, 1);
-    this.label.setDepth(LABEL_DEPTH);
-
-    // Move the label in "postupdate", which runs after physics has moved
-    // the sprite. If we did it in update(), the label would lag one frame behind.
-    scene.events.on('postupdate', this.syncLabel, this);
+    // Update the drawing order in "postupdate", which runs after physics
+    // has moved the sprite, so it uses this frame's position.
+    scene.events.on('postupdate', this.syncDepth, this);
   }
 
   // Moves the player. `direction` is { x, y } with a length of 0 or 1
@@ -148,24 +135,15 @@ export class Player {
     }
   }
 
-  // Keeps the label above the head and sorts the sprite by height on screen.
-  syncLabel() {
-    this.label.setPosition(this.sprite.x, this.sprite.y - LABEL_GAP);
-    // Characters lower on the screen are drawn in front of ones higher up.
+  // Characters lower on the screen are drawn in front of ones higher up.
+  syncDepth() {
     this.sprite.setDepth(this.sprite.y);
-  }
-
-  // Sets how sharp the label text is drawn. Use the camera zoom,
-  // so one text pixel matches one screen pixel and the text is not blurry.
-  setLabelResolution(resolution) {
-    this.label.setResolution(resolution);
   }
 
   // Removes the player from the scene (for example when a network player leaves).
   destroy() {
-    this.scene.events.off('postupdate', this.syncLabel, this);
+    this.scene.events.off('postupdate', this.syncDepth, this);
     this.sprite.destroy();
-    this.label.destroy();
   }
 }
 

@@ -5,12 +5,11 @@
 // It only reports a direction. Controls.js decides what to do with it.
 // It starts hidden and shows itself when the device looks like a touch device.
 
+import { onTouchModeChange } from '../../ui/touchMode.js';
+
 // Small pushes near the center are ignored, so a resting thumb does not
 // make the player slowly drift.
 const DEAD_ZONE = 0.2;
-
-// "coarse" pointer = the main input is a finger, not a mouse.
-const TOUCH_MEDIA_QUERY = '(pointer: coarse)';
 
 export class VirtualJoystick {
   constructor() {
@@ -21,9 +20,6 @@ export class VirtualJoystick {
     this.knob.className = 'joystick-knob';
     this.base.appendChild(this.knob);
     document.body.appendChild(this.base);
-
-    // True after the first touch anywhere on the page.
-    this.touchSeen = false;
 
     // Current direction. x and y go from -1 to 1.
     this.vector = { x: 0, y: 0 };
@@ -43,34 +39,13 @@ export class VirtualJoystick {
     this.base.addEventListener('pointerup', this.onPointerUp);
     this.base.addEventListener('pointercancel', this.onPointerUp);
 
-    // We do not decide "touch device or not" only once at page load,
-    // because the answer can change: Chrome device mode can switch from
-    // desktop to phone, and a laptop can have both a mouse and a touch screen.
-    this.updateVisibility = this.updateVisibility.bind(this);
-    this.onFirstTouch = this.onFirstTouch.bind(this);
-
-    // 1. The media query. Its "change" event fires when the main input
-    //    switches between mouse and finger.
-    this.touchQuery = window.matchMedia(TOUCH_MEDIA_QUERY);
-    this.touchQuery.addEventListener('change', this.updateVisibility);
-
-    // 2. The first real touch. Some touch devices still report a "fine"
-    //    pointer, so a touch is the surest sign. "capture" makes us hear it
-    //    even if another element stops the event.
-    window.addEventListener('touchstart', this.onFirstTouch, { capture: true, passive: true });
-
-    this.updateVisibility();
-  }
-
-  onFirstTouch() {
-    this.touchSeen = true;
-    window.removeEventListener('touchstart', this.onFirstTouch, { capture: true });
-    this.updateVisibility();
+    // Show on touch devices, hide otherwise. touchMode.js tells us when
+    // that changes (see there for why we keep checking).
+    this.stopWatchingTouchMode = onTouchModeChange((isTouch) => this.updateVisibility(isTouch));
   }
 
   // Shows the joystick on touch devices, hides it otherwise.
-  updateVisibility() {
-    const show = this.touchQuery.matches || this.touchSeen;
+  updateVisibility(show) {
     this.base.hidden = !show;
     if (!show) {
       // Do not keep walking if the joystick disappears while held.
@@ -136,8 +111,7 @@ export class VirtualJoystick {
 
   // Removes the joystick from the page and stops all its listeners.
   destroy() {
-    this.touchQuery.removeEventListener('change', this.updateVisibility);
-    window.removeEventListener('touchstart', this.onFirstTouch, { capture: true });
+    this.stopWatchingTouchMode();
     this.base.remove();
   }
 }

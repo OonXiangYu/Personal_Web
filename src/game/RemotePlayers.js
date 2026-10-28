@@ -19,12 +19,12 @@ const INTERPOLATION_DELAY_MS = 150;
 const MAX_SNAPSHOTS = 20;
 
 export class RemotePlayers {
-  constructor(scene) {
+  // overlay: the PlayerOverlay that draws names and chat bubbles.
+  constructor(scene, overlay) {
     this.scene = scene;
-    // Player id → { player: Player, snapshots: [{ time, x, y, facing, moving }] }
+    this.overlay = overlay;
+    // Player id → { player: Player, name, snapshots: [{ time, x, y, facing, moving }] }
     this.entries = new Map();
-    // The label sharpness to use for new players (see Player.setLabelResolution).
-    this.labelResolution = 1;
   }
 
   // How many remote players there are.
@@ -32,17 +32,29 @@ export class RemotePlayers {
     return this.entries.size;
   }
 
+  // The sprite of a remote player (for the name label position), or null.
+  getSprite(id) {
+    return this.entries.get(id)?.player.sprite || null;
+  }
+
+  // The username of a remote player, or null.
+  // Used for "Oscar left": the `leave` message only has the id.
+  getName(id) {
+    return this.entries.get(id)?.name || null;
+  }
+
   // Adds a player from a `welcome` or `join` message.
   add(data) {
     if (this.entries.has(data.id)) {
       this.remove(data.id);
     }
-    const player = new Player(this.scene, data.x, data.y, data.name, { physics: false });
-    player.setLabelResolution(this.labelResolution);
+    const player = new Player(this.scene, data.x, data.y, { physics: false });
     player.showState(data.facing, data.moving);
+    this.overlay.addPlayer(data.id, data.name);
 
     this.entries.set(data.id, {
       player,
+      name: data.name,
       snapshots: [{ time: performance.now(), x: data.x, y: data.y, facing: data.facing, moving: data.moving }],
     });
   }
@@ -52,6 +64,7 @@ export class RemotePlayers {
     const entry = this.entries.get(id);
     if (!entry) return;
     entry.player.destroy();
+    this.overlay.removePlayer(id);
     this.entries.delete(id);
   }
 
@@ -123,13 +136,5 @@ export class RemotePlayers {
     // "not moving", but they should still run until they arrive. So we
     // show running if either snapshot is moving.
     entry.player.showState(to.facing, from.moving || to.moving);
-  }
-
-  // Sets the label sharpness for all remote players (on zoom change).
-  setLabelResolution(resolution) {
-    this.labelResolution = resolution;
-    for (const entry of this.entries.values()) {
-      entry.player.setLabelResolution(resolution);
-    }
   }
 }

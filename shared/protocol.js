@@ -45,6 +45,22 @@ export const MSG = {
   //   { type: 'state', players: [{ id, x, y, facing, moving }, ...] }
   //   Only players that changed since the last tick are listed.
   STATE: 'state',
+
+  // client → server. "I said this."
+  //   { type: 'chat', text }
+  // server → client. Someone said something (sent right away, not on the tick).
+  //   { type: 'chat', id, name, text, ts }
+  //   id:   the speaker's player id
+  //   name: the speaker's username, taken from their login token by the server
+  //   text: the cleaned (and later, moderated) text
+  //   ts:   server time in milliseconds, when the server accepted the message
+  // Both directions use the same type name, like a normal chat.
+  CHAT: 'chat',
+
+  // server → client. A short message for this player only, shown briefly.
+  //   { type: 'notice', text }
+  //   For example "You are sending messages too fast".
+  NOTICE: 'notice',
 };
 
 // A "Player" in the messages above looks like this:
@@ -64,7 +80,18 @@ export const SERVER_TICK_MS = 100;
 // ---------- Limits (protect the server) ----------
 
 // A `move` message is about 60 bytes. Anything much bigger is not ours.
+// This limit is for every message type EXCEPT chat.
 export const MAX_MESSAGE_BYTES = 200;
+
+// The longest chat text, counted in characters (not bytes).
+// "你好" is 2 characters, even though it uses 6 bytes.
+export const CHAT_MAX_CHARS = 80;
+
+// The size limit for a whole chat message, in bytes.
+// 80 characters can need up to 4 bytes each in UTF-8 (320 bytes), and JSON
+// can make some characters longer (for example a quote becomes \"),
+// so we allow a lot more than 200.
+export const MAX_CHAT_MESSAGE_BYTES = 1024;
 
 // More messages than this per second from one connection are ignored.
 // A normal client sends at most 10.

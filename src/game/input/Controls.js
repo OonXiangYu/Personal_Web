@@ -9,10 +9,15 @@ const KeyCodes = Phaser.Input.Keyboard.KeyCodes;
 
 export class Controls {
   constructor(scene) {
+    this.keyboard = scene.input.keyboard;
+
+    // False while the player is typing in the chat box.
+    this.enabled = true;
+
     // The second argument (false) means "do not capture these keys".
-    // Captured keys cannot be typed into HTML text boxes, and we will need
-    // W, A, S, D in the chat box later.
-    this.keys = scene.input.keyboard.addKeys(
+    // Captured keys cannot be typed into HTML text boxes, and we need
+    // W, A, S, D in the chat box.
+    this.keys = this.keyboard.addKeys(
       {
         up: KeyCodes.UP,
         down: KeyCodes.DOWN,
@@ -36,9 +41,26 @@ export class Controls {
     scene.events.once('destroy', this.destroy, this);
   }
 
+  // Turns movement on or off. The chat box turns it off while open, so typing
+  // "w" types a "w" and does not walk. Phaser still sees the key presses
+  // (we do not capture keys), so we simply ignore them here.
+  setEnabled(enabled) {
+    this.enabled = enabled;
+    if (enabled) {
+      // Forget keys that were pressed while typing. Otherwise a key that was
+      // held when the chat box closed could look "stuck" down.
+      this.keyboard.resetKeys();
+    }
+  }
+
   // Returns the direction to move in: { x, y } with a length of 0 or 1.
   // x: -1 = left, 1 = right. y: -1 = up, 1 = down (screen coordinates).
   getDirection() {
+    // While typing, the player stands still.
+    if (!this.enabled) {
+      return { x: 0, y: 0 };
+    }
+
     const keys = this.keys;
     let x = 0;
     let y = 0;

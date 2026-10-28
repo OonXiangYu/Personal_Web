@@ -10,7 +10,17 @@ import { getMe } from '../ui/api.js';
 
 // The game server address, for example "localhost:8787" or
 // "pixelworld-realtime.yourname.workers.dev". Set in .env.local / Vercel.
-const REALTIME_HOST = import.meta.env.VITE_REALTIME_HOST;
+const REALTIME_HOST = cleanHost(import.meta.env.VITE_REALTIME_HOST);
+
+// Forgives small mistakes in VITE_REALTIME_HOST: spaces, a pasted
+// "https://" or "wss://" at the start, or a "/" at the end.
+// partysocket wants only "host" or "host:port".
+function cleanHost(raw) {
+  return (raw || '')
+    .trim()
+    .replace(/^(https?|wss?):\/\//i, '')
+    .replace(/\/+$/, '');
+}
 
 // After this many failed connection attempts in a row, we check why.
 const FAILURES_BEFORE_CHECK = 2;
@@ -91,6 +101,14 @@ export class WorldConnection {
   sendMove({ x, y, facing, moving }) {
     if (!this.isOpen) return;
     this.socket.send(JSON.stringify({ type: MSG.MOVE, x, y, facing, moving }));
+  }
+
+  // Sends a chat message. Returns false if we are not connected right now
+  // (the message is not kept for later: an old message would be confusing).
+  sendChat(text) {
+    if (!this.isOpen) return false;
+    this.socket.send(JSON.stringify({ type: MSG.CHAT, text }));
+    return true;
   }
 
   // Tries to connect again now (used by the "Retry" / "Play here" button).

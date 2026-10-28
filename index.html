@@ -16,6 +16,40 @@
     <!-- Phaser puts its canvas in here. -->
     <div id="game"></div>
 
+    <!-- Player names and chat bubbles (HTML, so the text is sharp on every screen).
+         Filled by src/ui/PlayerOverlay.js. Taps and clicks pass through it. -->
+    <div id="player-overlay"></div>
+
+    <!-- Chat history. Filled by src/ui/ChatLog.js. -->
+    <div id="chat-log" hidden>
+      <button id="chat-log-toggle" type="button" aria-controls="chat-log-lines">Chat ▾</button>
+      <div id="chat-log-lines" aria-live="polite"></div>
+    </div>
+
+    <!-- The chat box. Opened with Enter (PC) or the chat button (phone). See src/ui/ChatInput.js.
+         enterkeyhint="send" shows a "Send" key on phone keyboards.
+         autocomplete/autocorrect off: chat is short and casual, and phones should not rewrite it. -->
+    <form id="chat-bar" hidden>
+      <input
+        id="chat-input"
+        type="text"
+        enterkeyhint="send"
+        autocomplete="off"
+        autocorrect="off"
+        spellcheck="false"
+        placeholder="Say something…"
+        aria-label="Chat message"
+      />
+      <span id="chat-counter" hidden></span>
+      <button id="chat-send" type="submit">Send</button>
+    </form>
+
+    <!-- Short messages like "You are sending messages too fast". -->
+    <div id="chat-notice" role="status" hidden></div>
+
+    <!-- Opens the chat box on phones (bottom-right, away from the joystick). -->
+    <button id="chat-button" type="button" aria-label="Chat" hidden>Chat</button>
+
     <!-- Login / register screen. Shown when the player is not logged in. -->
     <div id="auth-screen" class="overlay">
       <form id="auth-form" class="card" novalidate>

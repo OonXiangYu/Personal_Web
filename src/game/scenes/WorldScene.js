@@ -1,7 +1,7 @@
 // The main game scene: the map, the players and the camera.
 // For now the map is a simple placeholder grid. Real Tiled maps come later.
-// It also connects to the real-time server, sends our position, and shows
-// the other players.
+// It also connects to the real-time server, sends our position, shows
+// the other players, and connects the chat (input, log, bubbles).
 
 import Phaser from 'phaser';
 import { Player } from '../Player.js';
@@ -9,6 +9,9 @@ import { RemotePlayers } from '../RemotePlayers.js';
 import { Controls } from '../input/Controls.js';
 import { WorldConnection, STATUS } from '../../net/WorldConnection.js';
 import { showNetStatus, hideNetStatus } from '../../ui/netStatus.js';
+import { PlayerOverlay } from '../../ui/PlayerOverlay.js';
+import { ChatInput } from '../../ui/ChatInput.js';
+import { ChatLog } from '../../ui/ChatLog.js';
 import { WORLD_WIDTH, WORLD_HEIGHT, SPAWN_POINT } from '../../../shared/world.js';
 import { MSG, CLIENT_SEND_INTERVAL_MS } from '../../../shared/protocol.js';
 
@@ -36,11 +39,25 @@ export class WorldScene extends Phaser.Scene {
     // Everyone starts at the same spot. The server's `welcome` message may
     // move us (for example back to where we were before a reconnect).
     // TODO: start at the user's `lastPosition` from MongoDB instead.
-    this.player = new Player(this, SPAWN_POINT.x, SPAWN_POINT.y, user.username);
+    this.player = new Player(this, SPAWN_POINT.x, SPAWN_POINT.y);
     this.player.sprite.setCollideWorldBounds(true);
 
+    // Our player id. It is the user id, the same id the server uses for us.
+    this.myId = user.id;
+
+    // Names and chat bubbles, drawn as HTML on top of the game (see PlayerOverlay.js).
+    this.overlay = new PlayerOverlay(document.getElementById('player-overlay'));
+    this.overlay.addPlayer(this.myId, user.username, { isLocal: true });
+
     this.controls = new Controls(this);
-    this.remotePlayers = new RemotePlayers(this);
+    this.remotePlayers = new RemotePlayers(this, this.overlay);
+
+    this.chatLog = new ChatLog();
+    this.chatInput = new ChatInput({
+      onSend: (text) => this.sendChat(text),
+      // While the chat box is open, the movement keys type letters instead.
+      onOpenChange: (open) => this.controls.setEnabled(!open),
+    });
 
     // The camera follows the player but never shows outside the world.
     const camera = this.cameras.main;
@@ -52,19 +69,39 @@ export class WorldScene extends Phaser.Scene {
     this.updateZoom(this.scale.gameSize);
     this.scale.on('resize', this.updateZoom, this);
 
+    // Move the names and bubbles after every drawn frame. "postrender" runs
+    // after Phaser has drawn, when the camera position for this frame is
+    // final, so the HTML lines up exactly with the sprites.
+    this.game.events.on('postrender', this.updateOverlay, this);
+
     this.startNetwork();
 
     // When the scene stops or the game is destroyed (logout), clean up.
-    // The scale manager lives longer than this scene, so remove our listener,
-    // or it would call a dead scene. And close the connection, or we would
-    // stay "online" after logging out.
+    // The scale manager and the game live longer than this scene, so remove
+    // our listeners, or they would call a dead scene. Close the connection,
+    // or we would stay "online" after logging out. And remove the HTML we
+    // added (names, bubbles, chat), or it would stay on top of the login form.
+    let cleanedUp = false;
     const cleanUp = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
       this.scale.off('resize', this.updateZoom, this);
+      this.game.events.off('postrender', this.updateOverlay, this);
       this.connection.close();
       hideNetStatus();
+      this.chatInput.destroy();
+      this.chatLog.destroy();
+      this.overlay.clear();
     };
     this.events.once('shutdown', cleanUp);
     this.events.once('destroy', cleanUp);
+  }
+
+  // Moves the HTML names and bubbles to the players' current positions.
+  updateOverlay() {
+    this.overlay.update(this.cameras.main, (id) =>
+      id === this.myId ? this.player.sprite : this.remotePlayers.getSprite(id),
+    );
   }
 
   // Phaser calls update() every frame. `time` is in milliseconds.
@@ -77,8 +114,6 @@ export class WorldScene extends Phaser.Scene {
   // ---------- Network ----------
 
   startNetwork() {
-    // Our player id from the server (the user id). Set by `welcome`.
-    this.myId = null;
     this.netStatus = null;
     // The last `move` we sent, and when, so we only send changes.
     this.lastSentMove = null;
@@ -91,6 +126,16 @@ export class WorldScene extends Phaser.Scene {
       onLoginRejected: () => this.registry.get('onLoginRejected')(),
     });
     this.connection.connect();
+  }
+
+  // Sends a chat message typed by the player.
+  // We do not show our own bubble yet: the server sends the message back to
+  // everyone, including us. That way we see exactly what others see (later,
+  // moderation may mask or block a message).
+  sendChat(text) {
+    if (!this.connection.sendChat(text)) {
+      this.chatInput.showNotice('Not connected');
+    }
   }
 
   // Sends our position at most every CLIENT_SEND_INTERVAL_MS,
@@ -126,7 +171,7 @@ export class WorldScene extends Phaser.Scene {
     switch (data.type) {
       case MSG.WELCOME: {
         if (!Array.isArray(data.players)) return;
-        this.myId = data.you;
+        // data.you is our user id, the same as this.myId.
         // Start fresh: the list in `welcome` is complete.
         this.remotePlayers.clear();
         for (const player of data.players) {
@@ -142,11 +187,29 @@ export class WorldScene extends Phaser.Scene {
       case MSG.JOIN:
         if (data.player && data.player.id !== this.myId) {
           this.remotePlayers.add(data.player);
+          this.chatLog.addSystem(`${data.player.name} joined`);
         }
         break;
-      case MSG.LEAVE:
+      case MSG.LEAVE: {
+        // Read the name before removing the player: `leave` only has the id.
+        const name = this.remotePlayers.getName(data.id);
         this.remotePlayers.remove(data.id);
+        if (name) {
+          this.chatLog.addSystem(`${name} left`);
+        }
         break;
+      }
+      case MSG.CHAT:
+        if (typeof data.text !== 'string' || typeof data.name !== 'string') return;
+        // Works for our own messages too (our id is in the overlay as well).
+        this.overlay.showBubble(data.id, data.text);
+        this.chatLog.addChat(data.name, data.text);
+        return;
+      case MSG.NOTICE:
+        if (typeof data.text === 'string') {
+          this.chatInput.showNotice(data.text);
+        }
+        return;
       case MSG.STATE:
         if (Array.isArray(data.players)) {
           // Our own position is in there too. We already know it, so skip it.
@@ -235,8 +298,8 @@ export class WorldScene extends Phaser.Scene {
     // In RESIZE mode the canvas size changes, so the camera must match it.
     this.cameras.main.setSize(width, height);
     this.cameras.main.setZoom(zoom);
-    this.player.setLabelResolution(zoom);
-    this.remotePlayers.setLabelResolution(zoom);
+    // The HTML names and bubbles do not need anything here: PlayerOverlay
+    // reads the zoom every frame.
   }
 }
 

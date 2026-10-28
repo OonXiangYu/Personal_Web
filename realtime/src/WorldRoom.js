@@ -2,21 +2,31 @@
 // All players in the room connect to the SAME object, so it can see everyone
 // and send them each other's positions.
 //
-// It does four jobs:
+// It does five jobs:
 //   1. Keep a list of players (who is here and where they are).
 //   2. Check every `move` message (not too fast, not off the map).
 //   3. Send everyone one `state` message 10 times per second (the "tick").
 //   4. Allow only one connection per account.
+//   5. Check chat messages and send them to everyone.
 
 import { Server } from 'partyserver';
 import {
   MSG,
   SERVER_TICK_MS,
   MAX_MESSAGE_BYTES,
+  MAX_CHAT_MESSAGE_BYTES,
   MAX_MESSAGES_PER_SECOND,
+  CHAT_MAX_CHARS,
   CLOSE_REPLACED,
 } from '../../shared/protocol.js';
 import { WORLD_WIDTH, WORLD_HEIGHT, MOVE_SPEED, SPAWN_POINT, FACINGS } from '../../shared/world.js';
+import { cleanChatText, countCharacters, ChatLimiter } from './chat.js';
+import { moderateMessage } from './moderation.js';
+
+// Texts of the notices we send to a player.
+const NOTICE_TOO_FAST = 'You are sending messages too fast';
+const NOTICE_TOO_LONG = 'Message too long';
+const NOTICE_BLOCKED = 'Your message was not sent';
 
 // Headers set by index.js after checking the token. Only index.js sets them.
 export const PLAYER_ID_HEADER = 'X-Player-Id';
@@ -99,6 +109,8 @@ export class WorldRoom extends Server {
       // For the message rate limit.
       messageWindowStart: 0,
       messageCount: 0,
+      // For the chat limits (speed, duplicates).
+      chat: new ChatLimiter(),
     };
     this.players.set(id, player);
     this.playerIdByConnection.set(connection.id, id);
@@ -126,8 +138,11 @@ export class WorldRoom extends Server {
     const player = this.getPlayerFor(connection);
     if (!player) return;
 
-    // We only use text messages. For plain-English JSON, 1 character is 1 byte.
-    if (typeof message !== 'string' || message.length > MAX_MESSAGE_BYTES) return;
+    // We only use text messages. A string's length (in UTF-16 units) is never
+    // more than its size in bytes, so this cheap check already drops anything
+    // bigger than the largest message we accept. The exact byte check per
+    // message type comes after parsing, below.
+    if (typeof message !== 'string' || message.length > MAX_CHAT_MESSAGE_BYTES) return;
 
     // Rate limit: count messages in 1-second windows.
     const now = Date.now();
@@ -145,10 +160,82 @@ export class WorldRoom extends Server {
       return;
     }
 
+    // Each type has its own size limit. Chat needs more room, because
+    // 80 Chinese characters use 240 bytes in UTF-8.
+    const bytes = new TextEncoder().encode(message).length;
+
     if (data?.type === MSG.MOVE) {
+      if (bytes > MAX_MESSAGE_BYTES) return;
       this.handleMove(player, data, now);
+    } else if (data?.type === MSG.CHAT) {
+      if (bytes > MAX_CHAT_MESSAGE_BYTES) return;
+      // handleChat waits for moderation, so it is async. We do not wait for it
+      // here, but we catch errors so a bad message can never crash the room.
+      this.handleChat(connection, player, data, now).catch((err) => {
+        // Only the error message. Never the chat text.
+        console.error(`[room ${this.name}] chat error: ${err?.message}`);
+      });
     }
-    // Unknown types are ignored. (Chat comes in Step 3.)
+    // Unknown types are ignored.
+  }
+
+  // Checks a `chat` message and sends it to everyone.
+  // The order of the checks matters:
+  //   clean → empty? → too long? → duplicate? → too fast? → moderation → send
+  // Cheap checks come first. Moderation (later an ML model) comes last,
+  // so spam never reaches it.
+  // Never log the text: chat is private to the players in the room.
+  async handleChat(connection, player, data, now) {
+    const text = cleanChatText(data.text);
+    if (!text) return;
+
+    // Reject, do not cut. Cutting could change the meaning of a message.
+    // The browser stops at CHAT_MAX_CHARS, so only a modified client gets here.
+    if (countCharacters(text) > CHAT_MAX_CHARS) {
+      this.sendNotice(connection, player, NOTICE_TOO_LONG, now);
+      return;
+    }
+
+    // The same text again within a few seconds: ignore it quietly.
+    if (player.chat.isDuplicate(text, now)) return;
+
+    if (!player.chat.tryUse(now)) {
+      this.sendNotice(connection, player, NOTICE_TOO_FAST, now);
+      return;
+    }
+    player.chat.remember(text, now);
+
+    // ALL chat goes through moderateMessage(). See moderation.js for the plan.
+    const result = await moderateMessage(text, { id: player.id, name: player.name });
+
+    // Moderation may take time. If the player left or was replaced by another
+    // tab meanwhile, do not send anything.
+    if (this.players.get(player.id) !== player) return;
+
+    if (!result?.allowed) {
+      this.sendNotice(connection, player, NOTICE_BLOCKED, now);
+      return;
+    }
+
+    // Use the text moderation gave back (it may be a masked version).
+    const finalText = typeof result.text === 'string' ? result.text : text;
+
+    // Send right away, not on the tick: chat should feel instant.
+    // The sender gets it too, so they see the same text everyone else sees.
+    // The name comes from the login token (set in onConnect), never from the client.
+    this.broadcastJson({
+      type: MSG.CHAT,
+      id: player.id,
+      name: player.name,
+      text: finalText,
+      ts: Date.now(),
+    });
+  }
+
+  // Sends a short notice to one player, but not more often than every 2 seconds.
+  sendNotice(connection, player, text, now) {
+    if (!player.chat.canSendNotice(now)) return;
+    this.sendTo(connection, { type: MSG.NOTICE, text });
   }
 
   // Checks a `move` message and updates the player's position.

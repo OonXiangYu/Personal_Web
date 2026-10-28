@@ -47,6 +47,11 @@ export function getBearerToken(request) {
 // connecting to our server with a visitor's token.
 export function isAllowedOrigin(origin, env) {
   if (!origin) return false;
-  const allowed = (env.ALLOWED_ORIGINS || '').split(',').map((item) => item.trim());
+  const allowed = (env.ALLOWED_ORIGINS || '')
+    .split(',')
+    // Forgive small typing mistakes in the config: spaces around an entry,
+    // or a "/" at the end. Browsers never send a "/" at the end of Origin.
+    .map((item) => item.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
   return allowed.includes(origin);
 }
