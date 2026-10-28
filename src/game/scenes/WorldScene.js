@@ -23,6 +23,7 @@ import { SpectatorCamera } from '../SpectatorCamera.js';
 import { centerLimits } from '../../../shared/mapInfo.js';
 import { PLAYER_HITBOX } from '../../../shared/world.js';
 import { createOcean, SKY_VIEW_HEIGHT } from '../Ocean.js';
+import { DeepLight } from '../DeepLight.js';
 import { MSG, CLIENT_SEND_INTERVAL_MS } from '../../../shared/protocol.js';
 
 // The message shown when the server has a different map than this page.
@@ -43,12 +44,26 @@ export class WorldScene extends Phaser.Scene {
   }
 
   create() {
+    // Phaser REUSES this scene object when it restarts the scene (on login
+    // and logout). Forget the things from the last run, so spectator mode
+    // never sees the old player (for example DeepLight puts the light on
+    // `this.player` when there is one).
+    this.player = null;
+    this.controls = null;
+    this.chatLog = null;
+    this.chatInput = null;
+    this.spectatorCamera = null;
+
     // Draw the Tiled map. `mapInfo` has the size, walls and spawn point.
     const { info, collisionLayer } = createWorldMap(this);
     this.mapInfo = info;
 
     // The ocean behind everything: sky, water gradient, bubbles (see Ocean.js).
     createOcean(this, info);
+
+    // Darkness in the deep, your light, and the glows of other fish.
+    // Made before any fish, because each fish uses it while drawing.
+    this.deepLight = new DeepLight(this, info);
 
     // The area the camera may show: the whole world, plus a strip of sky
     // above the water surface. The camera stops at these edges, so no black
@@ -177,8 +192,12 @@ export class WorldScene extends Phaser.Scene {
 
   // Moves the HTML names and bubbles to the players' current positions.
   updateOverlay() {
-    this.overlay.update(this.cameras.main, (id) =>
-      id === this.myId && this.player ? this.player.sprite : this.remotePlayers.getSprite(id),
+    this.overlay.update(
+      this.cameras.main,
+      (id) => (id === this.myId && this.player ? this.player.sprite : this.remotePlayers.getSprite(id)),
+      // Our own name always stays visible; other names fade in the deep
+      // when they are far from our light (see DeepLight.js).
+      (id, sprite) => (id === this.myId ? 1 : this.deepLight.nameOpacityAt(sprite.x, sprite.y)),
     );
   }
 

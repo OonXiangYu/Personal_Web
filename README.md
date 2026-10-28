@@ -142,6 +142,15 @@ Deeper fish take on the water's colour and become see-through, so they are almos
 invisible at the bottom. Settings are at the top of `src/game/depthFade.js`:
 where the fading starts, and how visible your own fish / other fish stay at the bottom.
 
+### Darkness and light in the deep
+
+Deep water gets dark (darker toward the bottom of the screen, by real depth). Your fish
+carries a soft light that lights up the water and fish around you; other fish are small
+glowing points in the dark, and their names fade out until they come near your light.
+Logged out, a wide gentle light follows the middle of the screen.
+All settings (where darkness starts, how dark, light sizes, glow colours, pulse, name fade
+distance) are at the top of `src/game/DeepLight.js`. Without WebGL, the darkness is skipped.
+
 ### After changing the map: deploy BOTH parts
 
 The website and the real-time server each read their own copy of `world.tmj`.

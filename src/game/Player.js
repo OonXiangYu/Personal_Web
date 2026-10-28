@@ -202,7 +202,12 @@ export class Player {
 
     // Deeper = darker and more see-through, blending into the water.
     // Uses the map height, so it still works after resizing the map in Tiled.
-    const look = depthFade(y, this.scene.mapInfo.height, this.minVisibility);
+    let look = depthFade(y, this.scene.mapInfo.height, this.minVisibility);
+    // Then the deep light: fish inside your light look normal again, and
+    // every fish gets its glow (see DeepLight.js).
+    if (this.scene.deepLight) {
+      look = this.scene.deepLight.adjustFish(this, x, y, look);
+    }
     this.image.setTint(look.tint);
     this.image.setAlpha(look.alpha);
   }
@@ -210,6 +215,7 @@ export class Player {
   // Removes the fish (for example when a remote player leaves).
   destroy() {
     this.scene.events.off('postupdate', this.draw, this);
+    this.scene.deepLight?.forget(this);
     this.sprite.destroy();
     this.image.destroy();
   }

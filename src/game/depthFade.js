@@ -15,7 +15,9 @@ import { waterColorAt, mixColors } from './Ocean.js';
 export const FADE_START_DEPTH = 0.2;
 
 // How visible a fish is at the very bottom (its alpha: 0 = invisible, 1 = solid).
-// Your own fish stays a bit more visible, so you can still find yourself.
+// Note: your OWN fish is always inside its own light (see DeepLight.js),
+// which brings it back to its normal look, so MIN_VISIBILITY_OWN_FISH only
+// matters when DeepLight is off (no WebGL).
 export const MIN_VISIBILITY_OWN_FISH = 0.15;
 export const MIN_VISIBILITY_OTHER_FISH = 0.05;
 

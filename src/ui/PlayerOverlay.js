@@ -69,11 +69,13 @@ export class PlayerOverlay {
       root,
       bubble,
       bubbleText,
-      // The last position and visibility we wrote, so we only touch the
-      // page when something changed (changing styles has a cost).
+      nameLabel,
+      // The last position, visibility and name opacity we wrote, so we only
+      // touch the page when something changed (changing styles has a cost).
       x: null,
       y: null,
       visible: false,
+      nameOpacity: 1,
       fadeTimer: null,
       hideTimer: null,
     });
@@ -122,7 +124,10 @@ export class PlayerOverlay {
   // Moves every label to its player. Call once per frame, after Phaser has drawn.
   //   camera:    the Phaser camera that drew the world
   //   getSprite: function (id) → the player's sprite, or null
-  update(camera, getSprite) {
+  //   getNameOpacity: function (id, sprite) → 0..1, how visible the NAME is
+  //                   (in the deep, names far from your light fade out).
+  //                   Chat bubbles are never faded.
+  update(camera, getSprite, getNameOpacity = () => 1) {
     const view = camera.worldView;
     const zoom = camera.zoom;
 
@@ -155,6 +160,14 @@ export class PlayerOverlay {
         // The first translate moves the anchor to (x, y). The second one
         // centers the label horizontally and puts its bottom on that point.
         tag.root.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
+      }
+
+      // Rounded to 0.05 steps, so we do not rewrite the style every frame
+      // for changes nobody could see.
+      const opacity = Math.round(getNameOpacity(id, sprite) * 20) / 20;
+      if (opacity !== tag.nameOpacity) {
+        tag.nameOpacity = opacity;
+        tag.nameLabel.style.opacity = String(opacity);
       }
     }
   }
