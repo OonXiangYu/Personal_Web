@@ -129,12 +129,20 @@ export class WorldScene extends Phaser.Scene {
     const cleanUp = () => {
       if (cleanedUp) return;
       cleanedUp = true;
+      // Only one of the two events fires. Remove the other listener too, or
+      // a new one would pile up on every login/logout (the scene is reused).
+      this.events.off('shutdown', cleanUp);
+      this.events.off('destroy', cleanUp);
       this.scale.off('resize', this.updateZoom, this);
       this.game.events.off('postrender', this.updateOverlay, this);
       this.connection.close();
       hideNetStatus();
       this.chatInput?.destroy();
       this.chatLog?.destroy();
+      // Remove every fish (our own and the others), so none of them keeps
+      // drawing after the scene has stopped.
+      this.player?.destroy();
+      this.remotePlayers.clear();
       this.overlay.clear();
     };
     this.events.once('shutdown', cleanUp);

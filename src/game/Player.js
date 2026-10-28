@@ -100,6 +100,13 @@ export class Player {
     // Draw the picture in "postupdate", which runs after physics has moved
     // the box, so the picture uses this frame's position.
     scene.events.on('postupdate', this.draw, this);
+
+    // When the scene stops (on login/logout it restarts), clean up by itself.
+    // Phaser destroys the box and the picture then, but it KEEPS the scene's
+    // event listeners. Without this, draw() would keep running with a
+    // destroyed box, throw an error, and stop the whole game loop.
+    scene.events.once('shutdown', this.destroy, this);
+    this.destroyed = false;
   }
 
   // Swims the local fish. `direction` is { x, y } with a length of 0 or 1
@@ -213,8 +220,12 @@ export class Player {
   }
 
   // Removes the fish (for example when a remote player leaves).
+  // Safe to call more than once (for example "leave", then the scene stopping).
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
     this.scene.events.off('postupdate', this.draw, this);
+    this.scene.events.off('shutdown', this.destroy, this);
     this.scene.deepLight?.forget(this);
     this.sprite.destroy();
     this.image.destroy();

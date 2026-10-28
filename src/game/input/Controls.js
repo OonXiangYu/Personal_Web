@@ -37,6 +37,7 @@ export class Controls {
 
     // The joystick is HTML outside of Phaser, so we must remove it ourselves
     // when the scene stops or the game is destroyed (for example on logout).
+    this.scene = scene;
     scene.events.once('shutdown', this.destroy, this);
     scene.events.once('destroy', this.destroy, this);
   }
@@ -90,5 +91,9 @@ export class Controls {
       this.joystick.destroy();
       this.joystick = null;
     }
+    // Only one of the two events fires. Remove the other listener too, or a
+    // new one would pile up on every login/logout (the scene is reused).
+    this.scene.events.off('shutdown', this.destroy, this);
+    this.scene.events.off('destroy', this.destroy, this);
   }
 }

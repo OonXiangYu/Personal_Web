@@ -18,6 +18,25 @@ Swimming down means going deeper. PC and phone players share the same world.
 
 Next: the chat moderation model.
 
+## Before you deploy: run the test
+
+```bash
+npm run test:relogin
+```
+
+It logs two test players (`test_ann` on a PC-sized window, `test_ben` on a phone-sized one)
+in and out 5 times without reloading, and checks that the name label, status box, chat log,
+chat, Log out button, Chat button and joystick come back every time, with no duplicates and
+no JavaScript errors. It ends with **PASSED** or **FAILED** (and a list of problems).
+
+- Nothing needs to be running: it starts its own test servers on ports **4300** and **8797**
+  (and 9339), and stops them at the end. Your own `vercel dev` / `wrangler dev` are not touched.
+- It needs **Microsoft Edge** or **Google Chrome** installed (`TEST_BROWSER=chrome` for Chrome).
+  `HEADED=1` shows the windows.
+- No real secrets and no database: the login is faked inside the test, with a random
+  throw-away secret. No accounts are created, so there is nothing to clean up in MongoDB.
+  (So it does not test the real login API.)
+
 ## How to deploy
 
 Always in this order:
@@ -77,6 +96,8 @@ public/assets/       Images and the map (served as they are). File names: lowerc
   tilesets/          Tileset images used by the map (collision.png: the red wall tile)
   sprites/fish/      The fish picture (clownfish.png, 44 x 26, facing left)
   fonts/             The pixel font (Fusion Pixel) and its license files
+tests/
+  relogin.test.js    Log in / log out 5 times on PC and phone (npm run test:relogin)
 tools/
   generate-map.js    Sets up world.tmj: size, empty "ground" layer, collision tileset, spawn point
   make-fish-sprite.js  Makes the 44 x 26 fish from the big original picture
