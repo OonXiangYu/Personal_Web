@@ -2,7 +2,7 @@
 // It slowly drifts around the map. When other players are online, it
 // sometimes follows one of them for a while, then switches.
 // It is meant to be calm: slow speed, soft starts and stops, and it never
-// shows the black area outside the map.
+// shows anything outside the camera area (the world plus the strip of sky).
 
 // Drifting speed, in game pixels per second.
 const DRIFT_SPEED = 25;
@@ -24,17 +24,19 @@ const FOLLOW_CHANCE = 0.7;
 
 export class SpectatorCamera {
   // scene:         the WorldScene
-  // mapInfo:       map size (from shared/mapInfo.js)
+  // area:          { x, y, width, height } the camera may show: the same
+  //                camera area as the player camera (the world plus the
+  //                strip of sky above it, see WorldScene)
   // remotePlayers: the RemotePlayers list (to find someone to follow)
   // start:         { x, y } to start from (for example where the player
-  //                camera was before logout), or null for the map centre
-  constructor(scene, mapInfo, remotePlayers, start) {
+  //                camera was before logout), or null for the middle
+  constructor(scene, area, remotePlayers, start) {
     this.scene = scene;
     this.camera = scene.cameras.main;
-    this.mapInfo = mapInfo;
+    this.area = area;
     this.remotePlayers = remotePlayers;
 
-    this.center = start ? { ...start } : { x: mapInfo.width / 2, y: mapInfo.height / 2 };
+    this.center = start ? { ...start } : { x: area.x + area.width / 2, y: area.y + area.height / 2 };
     this.followId = null; // the player we follow, or null while drifting
     this.target = this.randomPoint();
     this.nextPlanAt = 0; // pick a plan on the first update
@@ -65,8 +67,8 @@ export class SpectatorCamera {
       this.driftTowardTarget(seconds);
     }
 
-    // Never show outside the map.
-    this.center = this.keepViewInsideMap(this.center);
+    // Never show outside the camera area.
+    this.center = this.keepViewInsideArea(this.center);
     this.camera.centerOn(this.center.x, this.center.y);
   }
 
@@ -99,7 +101,7 @@ export class SpectatorCamera {
     this.nextPlanAt = time + PLAN_MIN_MS + Math.random() * (PLAN_MAX_MS - PLAN_MIN_MS);
   }
 
-  // A random point where the camera can be centred without showing outside the map.
+  // A random point where the camera can be centred without showing outside its area.
   randomPoint() {
     const range = this.safeRange();
     return {
@@ -108,8 +110,10 @@ export class SpectatorCamera {
     };
   }
 
-  // Moves a camera centre so the whole view stays on the map.
-  keepViewInsideMap(point) {
+  // Moves a camera centre so the whole view stays inside the camera area.
+  // (The camera's own bounds would stop it too, but then our `center` would
+  // drift away from where the camera really is, and following would lag.)
+  keepViewInsideArea(point) {
     const range = this.safeRange();
     return {
       x: Math.min(range.maxX, Math.max(range.minX, point.x)),
@@ -117,16 +121,19 @@ export class SpectatorCamera {
     };
   }
 
-  // Where the camera centre may be: half a view away from every edge.
-  // If the view is bigger than the map (huge screen), the only choice is
-  // the map's middle (then some black around the map cannot be avoided).
+  // Where the camera centre may be: half a view away from every edge of the
+  // area. (WorldScene picks a zoom at which the view always fits inside the
+  // area, so this range is never empty.)
   // Worked out every time, because the zoom and screen size can change.
   safeRange() {
-    const halfWidth = this.camera.width / this.camera.zoom / 2;
-    const halfHeight = this.camera.height / this.camera.zoom / 2;
-    const { width, height } = this.mapInfo;
-    const minX = Math.min(halfWidth, width / 2);
-    const minY = Math.min(halfHeight, height / 2);
-    return { minX, maxX: width - minX, minY, maxY: height - minY };
+    const halfWidth = Math.min(this.camera.width / this.camera.zoom / 2, this.area.width / 2);
+    const halfHeight = Math.min(this.camera.height / this.camera.zoom / 2, this.area.height / 2);
+    const { x, y, width, height } = this.area;
+    return {
+      minX: x + halfWidth,
+      maxX: x + width - halfWidth,
+      minY: y + halfHeight,
+      maxY: y + height - halfHeight,
+    };
   }
 }

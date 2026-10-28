@@ -22,7 +22,7 @@ export const MSG = {
   // client → server. "This is where I am now."
   //   { type: 'move', x, y, facing, moving }
   //   x, y:    position in game pixels (numbers)
-  //   facing:  'down' | 'left' | 'right' | 'up'
+  //   facing:  'left' | 'right'  (side view: the fish faces left or right)
   //   moving:  true while running, false when standing still
   // NOTE: we plan to use this movement data later to train an ML model that
   // spots cheaters. So keep this format simple and do not change it lightly.

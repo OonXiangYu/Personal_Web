@@ -5,13 +5,27 @@
 // by Phaser in src/game/WorldMap.js. This file does not draw anything.)
 // Plain JavaScript only: it runs in the browser and in a Cloudflare Worker.
 
-import { PLAYER_FEET, PLAYER_VISIBLE } from './world.js';
+import { PLAYER_HITBOX, PLAYER_VISIBLE } from './world.js';
 
 // A tile layer with this name marks walls. Any non-empty tile in it is blocked.
 export const COLLISION_LAYER_NAME = 'collision';
 
-// A point object with this name (in any object layer) is where players start.
+// An object with this name (in any object layer) is where players start:
+//   - a RECTANGLE: players start at a random spot inside it
+//   - a POINT: players always start at that exact spot
 export const SPAWN_OBJECT_NAME = 'spawn';
+
+// Without a "spawn" object, players start in this area: the shallow, sunlit
+// water near the surface, across the middle part of the world.
+// x: from 25% to 75% of the world width. y: 64 to 192 px below the surface.
+const DEFAULT_SPAWN_LEFT_SHARE = 0.25;
+const DEFAULT_SPAWN_RIGHT_SHARE = 0.75;
+const DEFAULT_SPAWN_TOP = 64;
+const DEFAULT_SPAWN_BOTTOM = 192;
+
+// How many random spots in the spawn area to try before giving up and
+// searching for the nearest free spot (when walls fill much of the area).
+const SPAWN_TRIES = 10;
 
 // Tiled stores "flipped" and "rotated" as the top 3 bits of a tile number.
 // We only care whether a tile is there, but we remove those bits to be safe.
@@ -22,10 +36,14 @@ const TILE_ID_MASK = 0x1fffffff;
 //   tileWidth, tileHeight
 //   columns, rows        map size in tiles
 //   blocked              one number per tile (row by row): 1 = wall, 0 = free
-//   spawn                { x, y } where players start (never inside a wall)
+//   spawnArea            { x, y, width, height } where players start
+//                        (pick a spot in it with pickSpawnPoint)
+//   spawnCenter          { x, y } a free spot near the middle of the area
+//                        (the browser shows the fish there until the server
+//                        sends the real start position)
 //   fingerprint          a short text that changes when the size, walls or
-//                        spawn change. Client and server compare it to notice
-//                        when one of them has an older map.
+//                        spawn area change. Client and server compare it to
+//                        notice when one of them has an older map.
 // Throws an Error with a clear message if the map cannot be used.
 export function readMapInfo(map) {
   if (map.orientation !== 'orthogonal') throw new Error('The map must be orthogonal.');
@@ -56,7 +74,12 @@ export function readMapInfo(map) {
     });
   }
 
-  info.spawn = findSpawn(map, info);
+  info.spawnArea = findSpawnArea(map, info);
+  info.spawnCenter = findFreeSpot(
+    info,
+    info.spawnArea.x + info.spawnArea.width / 2,
+    info.spawnArea.y + info.spawnArea.height / 2,
+  );
   info.fingerprint = makeFingerprint(info);
   return info;
 }
@@ -81,16 +104,16 @@ export function clampToMap(info, x, y) {
   };
 }
 
-// True if a player standing at (x, y) would have their feet on a wall tile.
-// `shrink` makes the feet a bit smaller (in pixels). The server uses 1 px,
+// True if a fish at (x, y) would have its hit box on a wall tile.
+// `shrink` makes the hit box a bit smaller (in pixels). The server uses 1 px,
 // so tiny rounding differences never block an honest player at a wall's edge.
-export function isFeetBlocked(info, x, y, shrink = 0) {
-  const left = x - PLAYER_FEET.halfWidth + shrink;
-  const right = x + PLAYER_FEET.halfWidth - shrink;
-  const top = y + PLAYER_FEET.top + shrink;
-  const bottom = y + PLAYER_FEET.bottom - shrink;
+export function isHitboxBlocked(info, x, y, shrink = 0) {
+  const left = x - PLAYER_HITBOX.halfWidth + shrink;
+  const right = x + PLAYER_HITBOX.halfWidth - shrink;
+  const top = y + PLAYER_HITBOX.top + shrink;
+  const bottom = y + PLAYER_HITBOX.bottom - shrink;
 
-  // Which tiles does the feet box touch? Usually 1, at most 4.
+  // Which tiles does the hit box touch? Usually 1 to 4, at most 6.
   // (The tiny 0.001 stops a box that ends exactly on a tile edge from
   // counting the next tile.)
   const firstColumn = Math.floor(left / info.tileWidth);
@@ -114,15 +137,15 @@ export function isFeetBlocked(info, x, y, shrink = 0) {
 // Why walk the path in small steps, not just check the end point?
 // The speed check allows up to about 40 px in one message. A wall can be
 // only one tile (32 px) thick, so a cheater could "hop over" it if we only
-// looked at the end. Steps of 4 px are smaller than the feet (8 px tall),
+// looked at the end. Steps of 4 px are smaller than the hit box (16 px tall),
 // so no wall can be skipped.
 // Why try X alone and Y alone? When walking diagonally into a wall, the
 // player should slide along it (like on the client), not stop dead.
 export function slideMove(info, fromX, fromY, toX, toY, shrink = 0) {
   // A player already standing in a wall (for example a wall was added to
   // the map) may move anywhere free, so they can get out.
-  if (isFeetBlocked(info, fromX, fromY, shrink)) {
-    return isFeetBlocked(info, toX, toY, shrink) ? { x: fromX, y: fromY } : { x: toX, y: toY };
+  if (isHitboxBlocked(info, fromX, fromY, shrink)) {
+    return isHitboxBlocked(info, toX, toY, shrink) ? { x: fromX, y: fromY } : { x: toX, y: toY };
   }
 
   const STEP = 4;
@@ -135,13 +158,13 @@ export function slideMove(info, fromX, fromY, toX, toY, shrink = 0) {
   let y = fromY;
   let hitWall = false;
   for (let i = 0; i < steps; i++) {
-    if (!isFeetBlocked(info, x + stepX, y + stepY, shrink)) {
+    if (!isHitboxBlocked(info, x + stepX, y + stepY, shrink)) {
       x += stepX;
       y += stepY;
-    } else if (stepX !== 0 && !isFeetBlocked(info, x + stepX, y, shrink)) {
+    } else if (stepX !== 0 && !isHitboxBlocked(info, x + stepX, y, shrink)) {
       x += stepX; // slide sideways along a wall above or below
       hitWall = true;
-    } else if (stepY !== 0 && !isFeetBlocked(info, x, y + stepY, shrink)) {
+    } else if (stepY !== 0 && !isHitboxBlocked(info, x, y + stepY, shrink)) {
       y += stepY; // slide up or down along a wall to the left or right
       hitWall = true;
     } else {
@@ -158,7 +181,7 @@ export function slideMove(info, fromX, fromY, toX, toY, shrink = 0) {
 // the center of the nearest free tile (searching in rings around it).
 export function findFreeSpot(info, x, y) {
   const start = clampToMap(info, x, y);
-  if (!isFeetBlocked(info, start.x, start.y)) return start;
+  if (!isHitboxBlocked(info, start.x, start.y)) return start;
 
   const startColumn = Math.floor(start.x / info.tileWidth);
   const startRow = Math.floor(start.y / info.tileHeight);
@@ -170,14 +193,14 @@ export function findFreeSpot(info, x, y) {
         // Only the outer edge of the ring (the inside was checked already).
         const onEdge = Math.abs(row - startRow) === ring || Math.abs(column - startColumn) === ring;
         if (!onEdge) continue;
-        // Stand so the FEET are in the middle of this tile.
-        const feetMiddle = (PLAYER_FEET.top + PLAYER_FEET.bottom) / 2;
+        // Put the middle of the HIT BOX in the middle of this tile.
+        const hitboxMiddle = (PLAYER_HITBOX.top + PLAYER_HITBOX.bottom) / 2;
         const candidate = clampToMap(
           info,
           (column + 0.5) * info.tileWidth,
-          (row + 0.5) * info.tileHeight - feetMiddle,
+          (row + 0.5) * info.tileHeight - hitboxMiddle,
         );
-        if (!isFeetBlocked(info, candidate.x, candidate.y)) return candidate;
+        if (!isHitboxBlocked(info, candidate.x, candidate.y)) return candidate;
       }
     }
   }
@@ -193,21 +216,43 @@ function findLayers(layers) {
 }
 
 // The "spawn" object, or the middle of the map. Always a free spot.
-function findSpawn(map, info) {
+// The area where players start: the "spawn" rectangle or point from the map,
+// or the default shallow-water area. A point is an area of size 0.
+function findSpawnArea(map, info) {
   for (const layer of findLayers(map.layers || [])) {
     if (layer.type !== 'objectgroup') continue;
     const object = (layer.objects || []).find((item) => item.name === SPAWN_OBJECT_NAME);
     if (object) {
-      // A point object's x/y is the point. For a rectangle, use its middle.
-      const x = object.x + (object.width || 0) / 2;
-      const y = object.y + (object.height || 0) / 2;
-      return findFreeSpot(info, x, y);
+      return { x: object.x, y: object.y, width: object.width || 0, height: object.height || 0 };
     }
   }
-  return findFreeSpot(info, info.width / 2, info.height / 2);
+  const left = info.width * DEFAULT_SPAWN_LEFT_SHARE;
+  const right = info.width * DEFAULT_SPAWN_RIGHT_SHARE;
+  return {
+    x: left,
+    y: DEFAULT_SPAWN_TOP,
+    width: right - left,
+    height: DEFAULT_SPAWN_BOTTOM - DEFAULT_SPAWN_TOP,
+  };
 }
 
-// A short text that changes whenever the size, the walls or the spawn change.
+// Picks where a new player starts: a random spot in the spawn area, so fish
+// do not all appear on top of each other. The spot is always inside the map
+// and never in a wall. The SERVER calls this (the browser just shows the
+// fish where the server says).
+// `random` is a function giving 0..1; it is only a parameter so tests can
+// use a fixed one.
+export function pickSpawnPoint(info, random = Math.random) {
+  const area = info.spawnArea;
+  for (let i = 0; i < SPAWN_TRIES; i++) {
+    const spot = clampToMap(info, area.x + random() * area.width, area.y + random() * area.height);
+    if (!isHitboxBlocked(info, spot.x, spot.y)) return spot;
+  }
+  // Walls fill much of the area: use the nearest free spot to its middle.
+  return info.spawnCenter;
+}
+
+// A short text that changes whenever the size, the walls or the spawn area change.
 // (FNV-1a hash: simple, fast, and the same in the browser and the Worker.)
 function makeFingerprint(info) {
   let hash = 0x811c9dc5;
@@ -215,7 +260,8 @@ function makeFingerprint(info) {
     hash ^= value & 0xff;
     hash = Math.imul(hash, 0x01000193) >>> 0;
   };
-  for (const char of `${info.width}x${info.height}|${Math.round(info.spawn.x)},${Math.round(info.spawn.y)}|`) {
+  const area = info.spawnArea;
+  for (const char of `${info.width}x${info.height}|${area.x},${area.y},${area.width},${area.height}|`) {
     add(char.charCodeAt(0));
   }
   for (const cell of info.blocked) add(cell);

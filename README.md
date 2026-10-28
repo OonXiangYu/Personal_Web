@@ -1,12 +1,17 @@
 # Oscar World
 
-A small 2D pixel-art open world game for the web (top-down view).
-PC and phone players will share the same world.
+A small 2D pixel-art game for the web: a **side-view ocean**. Every player is a fish.
+Swimming down means going deeper. PC and phone players share the same world.
 
 **Done so far:**
 - Log in with a username and password.
-- Real-time multiplayer: everyone who is logged in sees each other move.
+- Real-time multiplayer: everyone who is logged in sees each other swim.
 - Chat bubbles and a chat log.
+- A placeholder ocean (1920 × 3840 px): a blue-to-black water gradient and slow bubbles.
+  Fish swim in all directions with a little inertia, and can never leave the water.
+- The camera stays inside the world (no black is ever shown), plus a 96 px strip of sky
+  above the surface (`SKY_VIEW_HEIGHT` in `src/game/Ocean.js`). On very wide screens the
+  zoom goes up so the world always fills the screen width.
 - A Tiled map with walls, a spawn point and layers above the players.
 - Before logging in, the live world runs behind the login popup
   (logged-out visitors watch as read-only "spectators", see below).
@@ -59,7 +64,7 @@ api/                 Login API (each file is one endpoint)
 shared/              Code used by the browser AND the servers
   validate.js        Username and password rules
   protocol.js        Real-time message types and limits
-  world.js           Walking speed, player size
+  world.js           Swimming speed, fish facings, fish hit box and size
   mapInfo.js         Reads size, walls and spawn from the Tiled map (browser + server)
 realtime/            Real-time server (Cloudflare Worker), deployed separately
   src/index.js       Checks origin, room and token, then passes the connection on
@@ -69,16 +74,21 @@ realtime/            Real-time server (Cloudflare Worker), deployed separately
   wrangler.jsonc     Worker settings (Durable Object, allowed websites)
 public/assets/       Images and the map (served as they are). File names: lowercase only.
   maps/world.tmj     The world map (Tiled)
-  tilesets/          Tileset images used by the map
+  tilesets/          Tileset images used by the map (collision.png: the red wall tile)
+  sprites/fish/      The fish picture (clownfish.png, 44 x 26, facing left)
   fonts/             The pixel font (Fusion Pixel) and its license files
 tools/
-  generate-floor.js  Makes the "ground" layer of world.tmj (grass)
+  generate-map.js    Sets up world.tmj: size, empty "ground" layer, collision tileset, spawn point
+  make-fish-sprite.js  Makes the 44 x 26 fish from the big original picture
+  png.js             Small PNG read/write helpers for the tools
 src/
   main.js            Page start-up: auto login, login form, start the game
   ui/                HTML login form, API calls, token storage, status box, CSS
   net/               Connection to the real-time server
-  game/              Phaser game: scenes, map, Player class, remote players, controls
-Sprites/             Unused sprites for later (attack animations)
+  game/              Phaser game: scenes, map, ocean background, fish (Player.js), controls
+old-assets/          Files we no longer use, kept just in case (never served):
+                     the old walking character, its attack sprites, the grass tileset,
+                     and the original big clownfish picture
 ```
 
 ## Editing the map (Tiled)
@@ -92,8 +102,9 @@ Rules:
 - Keep tilesets **embedded** in the map (when adding one, choose "Embed in map").
 - Keep **Tile Layer Format: CSV** (Map > Map Properties). The game cannot read base64.
 - All asset file names are lowercase (the live server is case-sensitive).
-- Do not paint on the `ground` layer: `node tools/generate-floor.js` replaces it.
-  Paint on your own layers above it.
+- The `ground` layer is empty on purpose: the water, sky and bubbles are drawn by the game
+  (colours in `src/game/Ocean.js`). `node tools/generate-map.js` empties `ground` again,
+  so paint on your own layers above it.
 
 ### Layers above the players (treetops, roofs)
 
@@ -105,20 +116,31 @@ Normally every tile layer is drawn **under** the players. To draw a layer **over
 ### Walls (the collision layer)
 
 1. **Layer > New > Tile Layer**. Name it exactly `collision` (lowercase).
-2. Paint any tile where players must not walk. Which tile does not matter; it is never drawn.
-   Tip: lower the layer's opacity in Tiled so you can see the map under it.
-3. Save. Every non-empty tile in this layer is a wall. Players slide along walls.
-   Only the player's **feet** touch walls, so their head can overlap a wall that is "behind" them.
+2. Paint with the red tile from the `collision` tileset where fish must not swim.
+   (Any tile works; the game never draws this layer.)
+3. Save. Every non-empty tile in this layer is a wall. Fish slide along walls.
+   Only the fish's **body** touches walls (34 × 16 px), so thin fins and the tail can overlap a wall a little.
 
-### Spawn point (where players start)
+### Spawn area (where players start)
 
-1. **Layer > New > Object Layer** (any name, for example `points`).
-2. Pick the **Insert Point** tool (the pin icon, shortcut `I`) and click where players should start.
-3. In the Properties panel, set the object's **Name** to `spawn`.
-4. Save.
+The map already has a rectangle named `spawn` in the `points` object layer
+(x 480–1440, y 64–192: the sunlit water near the surface). Each new player starts at a
+**random spot inside it**, so fish do not appear on top of each other. The server picks the spot.
 
-Without a spawn point, players start in the middle of the map.
-If the spawn point is on a wall, the game moves it to the nearest free spot.
+To change it in Tiled: select the `points` layer, click the rectangle and move or resize it.
+To make a new one: **Insert Rectangle** tool (shortcut `R`), draw it, and set its **Name** to `spawn`.
+A **point** named `spawn` also works (then everyone starts at that exact spot).
+
+- Without any `spawn` object, the default area above is used.
+- Spots inside walls are never used (the game picks the nearest free spot instead).
+- A player who reconnects within **60 seconds** (`QUICK_RECONNECT_MS` in
+  `realtime/src/WorldRoom.js`) comes back where they left. Later, they start in the spawn area again.
+
+### Fish fade with depth
+
+Deeper fish take on the water's colour and become see-through, so they are almost
+invisible at the bottom. Settings are at the top of `src/game/depthFade.js`:
+where the fading starts, and how visible your own fish / other fish stay at the bottom.
 
 ### After changing the map: deploy BOTH parts
 

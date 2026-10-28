@@ -1,5 +1,4 @@
-// The first scene. It loads the images and the map, makes the animations,
-// then starts the world scene.
+// The first scene. It loads the images and the map, then starts the world scene.
 
 import Phaser from 'phaser';
 import { Player } from '../Player.js';
@@ -35,7 +34,6 @@ export class BootScene extends Phaser.Scene {
 
   // Phaser calls create() when loading is done.
   create() {
-    Player.createAnimations(this);
     this.scene.start('WorldScene');
   }
 }

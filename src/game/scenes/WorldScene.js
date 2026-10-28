@@ -21,7 +21,8 @@ import { ChatLog } from '../../ui/ChatLog.js';
 import { createWorldMap } from '../WorldMap.js';
 import { SpectatorCamera } from '../SpectatorCamera.js';
 import { centerLimits } from '../../../shared/mapInfo.js';
-import { PLAYER_FEET } from '../../../shared/world.js';
+import { PLAYER_HITBOX } from '../../../shared/world.js';
+import { createOcean, SKY_VIEW_HEIGHT } from '../Ocean.js';
 import { MSG, CLIENT_SEND_INTERVAL_MS } from '../../../shared/protocol.js';
 
 // The message shown when the server has a different map than this page.
@@ -45,6 +46,26 @@ export class WorldScene extends Phaser.Scene {
     // Draw the Tiled map. `mapInfo` has the size, walls and spawn point.
     const { info, collisionLayer } = createWorldMap(this);
     this.mapInfo = info;
+
+    // The ocean behind everything: sky, water gradient, bubbles (see Ocean.js).
+    createOcean(this, info);
+
+    // The area the camera may show: the whole world, plus a strip of sky
+    // above the water surface. The camera stops at these edges, so no black
+    // is ever shown. (Fish are blocked at the world edges, so near an edge
+    // the camera stops and the fish keeps swimming toward the screen edge.)
+    this.cameraArea = {
+      x: 0,
+      y: -SKY_VIEW_HEIGHT,
+      width: info.width,
+      height: info.height + SKY_VIEW_HEIGHT,
+    };
+    this.cameras.main.setBounds(
+      this.cameraArea.x,
+      this.cameraArea.y,
+      this.cameraArea.width,
+      this.cameraArea.height,
+    );
 
     // Logged in? (null = a logged-out visitor behind the login form.)
     const user = this.registry.get('user');
@@ -70,7 +91,8 @@ export class WorldScene extends Phaser.Scene {
 
     if (this.isSpectator) {
       this.myId = null;
-      this.spectatorCamera = new SpectatorCamera(this, info, this.remotePlayers, cameraFrom);
+      // The spectator camera drifts inside the same area as the player camera.
+      this.spectatorCamera = new SpectatorCamera(this, this.cameraArea, this.remotePlayers, cameraFrom);
     } else {
       this.createPlayer(user, collisionLayer, cameraFrom);
     }
@@ -108,17 +130,19 @@ export class WorldScene extends Phaser.Scene {
   createPlayer(user, collisionLayer, cameraFrom) {
     const info = this.mapInfo;
 
-    // Keep the player's WHOLE body inside the map.
+    // Keep the WHOLE fish inside the map.
     this.setPhysicsBounds();
 
-    // Start at the map's spawn point. The server's `welcome` message may
-    // move us (for example back to where we were before a reconnect).
+    // The SERVER decides where we start (a random spot in the spawn area, or
+    // our last spot after a quick reconnect) and tells us in `welcome`,
+    // a moment after connecting. Until then, show the fish in the middle of
+    // the spawn area.
     // TODO: start at the user's `lastPosition` from MongoDB instead.
-    this.player = new Player(this, info.spawn.x, info.spawn.y);
-    this.player.sprite.setCollideWorldBounds(true);
+    // (The fish stops at the physics world edges by itself, see Player.js.)
+    this.player = new Player(this, info.spawnCenter.x, info.spawnCenter.y);
 
-    // Walls: the player's feet cannot enter tiles of the "collision" layer.
-    // Arcade physics makes the player slide along a wall instead of sticking.
+    // Walls: the fish's hit box cannot enter tiles of the "collision" layer.
+    // Arcade physics makes the fish slide along a wall instead of sticking.
     if (collisionLayer) {
       this.physics.add.collider(this.player.sprite, collisionLayer);
     }
@@ -136,10 +160,9 @@ export class WorldScene extends Phaser.Scene {
       onOpenChange: (open) => this.controls.setEnabled(!open),
     });
 
-    // The camera ALWAYS keeps the player in the middle of the screen, also at
-    // the map edges. It has no bounds on purpose: near an edge, the area
-    // outside the map is shown in the game's background color (black).
-    // This also keeps the player's name label on screen at the top edge.
+    // The camera follows the player, but stops at the edges of the camera
+    // area (set in create). Near a world edge the camera stays still and
+    // the fish swims on toward the edge of the screen.
     const camera = this.cameras.main;
     if (cameraFrom) {
       // Just logged in: start where the spectator camera was and glide
@@ -166,7 +189,7 @@ export class WorldScene extends Phaser.Scene {
       this.spectatorCamera.update(time, delta);
       return;
     }
-    this.player.move(this.controls.getDirection());
+    this.player.move(this.controls.getDirection(), delta);
     this.sendMoveIfNeeded(time);
     this.remotePlayers.update();
   }
@@ -359,18 +382,22 @@ export class WorldScene extends Phaser.Scene {
 
   // ---------- Map and camera ----------
 
-  // Sets the physics world bounds so the WHOLE visible player stays inside
-  // the map. The physics body is only the feet, so the bounds are the
-  // allowed range for the feet box, worked out from the allowed range for
-  // the sprite center (shared with the server, see shared/mapInfo.js).
-  // Example: the head is 16 px above the center, so the center can never be
-  // closer than 16 px to the top edge, so the feet box starts 27 px down.
+  // Sets the physics world bounds so the WHOLE visible fish stays inside
+  // the world. This also means a fish can never leave the water: the top of
+  // the world (y = 0) is the water surface. The server uses the same limits
+  // (shared/mapInfo.js), so a cheater cannot swim into the sky either.
+  // The physics body is only the hit box (smaller than the picture), so the
+  // bounds are the allowed range for the hit box, worked out from the
+  // allowed range for the fish's center.
+  // Example: the picture reaches 13 px above the center, so the center can
+  // never be closer than 13 px to the surface; the hit box (8 px above the
+  // center) then starts 5 px down.
   setPhysicsBounds() {
     const limits = centerLimits(this.mapInfo);
-    const left = limits.minX - PLAYER_FEET.halfWidth;
-    const top = limits.minY + PLAYER_FEET.top;
-    const right = limits.maxX + PLAYER_FEET.halfWidth;
-    const bottom = limits.maxY + PLAYER_FEET.bottom;
+    const left = limits.minX - PLAYER_HITBOX.halfWidth;
+    const top = limits.minY + PLAYER_HITBOX.top;
+    const right = limits.maxX + PLAYER_HITBOX.halfWidth;
+    const bottom = limits.maxY + PLAYER_HITBOX.bottom;
     this.physics.world.setBounds(left, top, right - left, bottom - top);
   }
 
@@ -379,10 +406,18 @@ export class WorldScene extends Phaser.Scene {
   // A whole number keeps every game pixel the same size, so pixel art stays sharp.
   // Example: a 1080 px tall PC screen gets zoom 3 (shows 360 px).
   // A phone 390 px wide gets zoom 1 (shows 390 px).
+  // But the view must never be bigger than the camera area, or black bands
+  // would show at the sides. So on a very wide screen we zoom in more.
+  // Example: a 4000 px wide screen at zoom 2 would show 2000 px, more than
+  // the 1920 px world, so it gets zoom 3 instead (shows 1333 px).
   updateZoom(gameSize) {
     const { width, height } = gameSize;
     const shorterSide = Math.min(width, height);
-    const zoom = Math.max(1, Math.round(shorterSide / TARGET_VIEW_SIZE));
+    const comfortableZoom = Math.max(1, Math.round(shorterSide / TARGET_VIEW_SIZE));
+    // The smallest whole zoom at which the camera area fills the screen.
+    const fillWidthZoom = Math.ceil(width / this.cameraArea.width);
+    const fillHeightZoom = Math.ceil(height / this.cameraArea.height);
+    const zoom = Math.max(comfortableZoom, fillWidthZoom, fillHeightZoom);
 
     // In RESIZE mode the canvas size changes, so the camera must match it.
     this.cameras.main.setSize(width, height);

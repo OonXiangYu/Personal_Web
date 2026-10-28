@@ -25,12 +25,12 @@ import {
   SPECTATOR_MAX_MS,
 } from '../../shared/protocol.js';
 import { MOVE_SPEED, FACINGS } from '../../shared/world.js';
-import { clampToMap, slideMove, findFreeSpot } from '../../shared/mapInfo.js';
+import { clampToMap, slideMove, findFreeSpot, pickSpawnPoint } from '../../shared/mapInfo.js';
 import { worldMap } from './worldMap.js';
 import { cleanChatText, countCharacters, ChatLimiter } from './chat.js';
 import { moderateMessage } from './moderation.js';
 
-// When checking walls, the server makes the player's feet 1 px smaller than
+// When checking walls, the server makes the fish's hit box 1 px smaller than
 // the browser does. Tiny rounding differences then never block an honest
 // player who is standing right against a wall.
 const WALL_CHECK_SHRINK = 1;
@@ -61,9 +61,13 @@ const SPEED_TOLERANCE = 1.2;
 // The bucket holds at most this much (half a second of walking).
 const MAX_ALLOWANCE = MOVE_SPEED * 0.5;
 
-// We remember where players were when they left, so a quick reconnect puts
-// them back in the same spot. This is only in memory: it is lost when the
-// room shuts down. Keep at most this many, so memory cannot grow forever.
+// We remember where players were when they left, so a QUICK reconnect
+// (for example a dropped phone connection) puts them back in the same spot.
+// After this long, a returning player starts in the shallow spawn area
+// again, like a new visit, and the saved spot is thrown away.
+const QUICK_RECONNECT_MS = 60_000;
+// Also never keep more than this many saved spots (extra safety for memory).
+// This is only in memory: it is lost when the room shuts down.
 // TODO: save positions to MongoDB (`lastPosition`) instead.
 const MAX_REMEMBERED_POSITIONS = 1000;
 
@@ -85,7 +89,8 @@ export class WorldRoom extends Server {
   // Connection id → player id. Lets us find the player for a message.
   playerIdByConnection = new Map();
 
-  // Player id → { x, y }, where they were when they left.
+  // Player id → { x, y, leftAt }, where they were when they left, and when.
+  // Oldest first (see rememberPosition), so old ones are easy to remove.
   lastPositions = new Map();
 
   // Ids of players that moved since the last tick.
@@ -124,12 +129,16 @@ export class WorldRoom extends Server {
       oldConnection?.close(CLOSE_REPLACED, 'Logged in somewhere else');
     }
 
-    // Start where they were: in this room right now, or when they last left.
-    // Otherwise at the map's spawn point.
+    // Where does this player start?
+    //   - Taking over from another tab ("Play here"): where the fish is now.
+    //   - Back within QUICK_RECONNECT_MS of leaving: where they left.
+    //   - Otherwise: a random spot in the shallow spawn area (shared code,
+    //     so the browser and the server use the same area and rules).
+    this.forgetOldPositions();
     const remembered = oldPlayer || this.lastPositions.get(id);
     // A remembered spot may now be inside a wall (if the map changed), so
-    // move it to the nearest free spot. The spawn point is always free already.
-    const start = remembered ? findFreeSpot(worldMap, remembered.x, remembered.y) : worldMap.spawn;
+    // move it to the nearest free spot. pickSpawnPoint is always free already.
+    const start = remembered ? findFreeSpot(worldMap, remembered.x, remembered.y) : pickSpawnPoint(worldMap);
 
     const player = {
       id,
@@ -137,7 +146,7 @@ export class WorldRoom extends Server {
       connectionId: connection.id,
       x: start.x,
       y: start.y,
-      facing: oldPlayer?.facing || 'down',
+      facing: oldPlayer?.facing || 'left',
       moving: false,
       // For the movement check.
       allowance: MAX_ALLOWANCE,
@@ -450,13 +459,25 @@ export class WorldRoom extends Server {
   }
 
   rememberPosition(player) {
+    this.forgetOldPositions();
     // Delete first, so the newest entry moves to the end of the Map.
     this.lastPositions.delete(player.id);
-    this.lastPositions.set(player.id, { x: player.x, y: player.y });
+    this.lastPositions.set(player.id, { x: player.x, y: player.y, leftAt: Date.now() });
     if (this.lastPositions.size > MAX_REMEMBERED_POSITIONS) {
       // A Map keeps insertion order, so the first key is the oldest.
       const oldestId = this.lastPositions.keys().next().value;
       this.lastPositions.delete(oldestId);
+    }
+  }
+
+  // Throws away saved spots older than QUICK_RECONNECT_MS, so a late return
+  // starts in the spawn area, and the list cannot grow forever.
+  // The Map is oldest first, so we can stop at the first one that is new enough.
+  forgetOldPositions() {
+    const tooOld = Date.now() - QUICK_RECONNECT_MS;
+    for (const [id, saved] of this.lastPositions) {
+      if (saved.leftAt > tooOld) break;
+      this.lastPositions.delete(id);
     }
   }
 }

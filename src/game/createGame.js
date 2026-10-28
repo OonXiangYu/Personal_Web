@@ -17,8 +17,8 @@ export function createGame(parentId, { onLoginRejected }) {
   const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: parentId,
-    // Plain black: shown outside the map when the player is near an edge
-    // (the camera always keeps the player in the middle).
+    // Plain black. Normally never seen: the camera stays inside the world
+    // and the strip of sky above it (see WorldScene). Shown only while loading.
     backgroundColor: '#000000',
 
     // Keep pixel art sharp: no smoothing when scaling, and draw at whole pixels.
