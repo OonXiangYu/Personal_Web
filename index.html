@@ -1,0 +1,63 @@
+<!doctype html>
+<!--
+  The only HTML page of the game.
+  The Phaser canvas goes inside #game. The login form is normal HTML on top
+  of it, because only real HTML inputs open the phone keyboard and the
+  Chinese input method properly.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover lets the game use the whole screen on phones with a notch. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Pixel World</title>
+  </head>
+  <body>
+    <!-- Phaser puts its canvas in here. -->
+    <div id="game"></div>
+
+    <!-- Login / register screen. Shown when the player is not logged in. -->
+    <div id="auth-screen" class="overlay">
+      <form id="auth-form" class="card" novalidate>
+        <h1>Pixel World</h1>
+
+        <!-- Shown while we check a saved login on page load. -->
+        <p id="auth-loading" class="loading">Loading…</p>
+
+        <div id="auth-fields" hidden>
+          <label for="auth-username">Username</label>
+          <!-- autocapitalize/autocorrect off: phones should not change the name. -->
+          <input
+            id="auth-username"
+            name="username"
+            type="text"
+            autocomplete="username"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            maxlength="16"
+          />
+
+          <label for="auth-password">Password</label>
+          <input id="auth-password" name="password" type="password" autocomplete="current-password" />
+
+          <!-- Only shown when creating an account, to catch typos. -->
+          <div id="auth-confirm-row" hidden>
+            <label for="auth-confirm">Confirm password</label>
+            <input id="auth-confirm" name="confirm" type="password" autocomplete="new-password" />
+          </div>
+
+          <p id="auth-error" class="error" role="alert"></p>
+
+          <button id="auth-submit" type="submit">Log in</button>
+          <button id="auth-switch" type="button" class="link-button">No account? Create one</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Shown while the game is running. -->
+    <button id="logout-button" type="button" hidden>Log out</button>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

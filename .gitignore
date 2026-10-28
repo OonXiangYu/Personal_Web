@@ -1,0 +1,18 @@
+# Installed packages
+node_modules
+
+# Build output from Vite
+dist
+
+# Local Vercel project link and cache
+.vercel
+
+# Secret env files. Never commit these.
+.env
+.env.*
+# But keep the example file, it has no real values.
+!.env.example
+
+# Editor and system files
+.DS_Store
+Thumbs.db

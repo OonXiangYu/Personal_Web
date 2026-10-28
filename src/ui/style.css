@@ -1,0 +1,155 @@
+/* Page styles: full-screen game, the login form, the logout button and the joystick. */
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #1b1b24;
+  color: #f2f2f2;
+  font-family: Arial, 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  /* Stop the "pull to refresh" bounce on phones while playing. */
+  overscroll-behavior: none;
+}
+
+/* The game fills the whole window. Phaser RESIZE mode reads this size. */
+#game {
+  position: fixed;
+  inset: 0;
+  /* Stop the browser from scrolling or zooming when the player touches the game. */
+  touch-action: none;
+}
+
+/* Use our own [hidden] rule, so display:flex below cannot override it. */
+[hidden] {
+  display: none !important;
+}
+
+/* ---------- Login form ---------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(10, 10, 20, 0.85);
+  /* If the phone keyboard makes the screen short, let the form scroll. */
+  overflow-y: auto;
+  z-index: 10;
+}
+
+.card {
+  width: 100%;
+  max-width: 320px;
+  padding: 24px;
+  border-radius: 8px;
+  background: #2a2a3a;
+  box-sizing: border-box;
+}
+
+.card h1 {
+  margin: 0 0 16px;
+  font-size: 24px;
+  text-align: center;
+}
+
+.card label {
+  display: block;
+  margin: 12px 0 4px;
+  font-size: 14px;
+}
+
+.card input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #15151f;
+  color: #fff;
+  /* 16px or more stops iPhone Safari from zooming in when the input is tapped. */
+  font-size: 16px;
+}
+
+.card button {
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px;
+  border: none;
+  border-radius: 4px;
+  background: #4c8bf5;
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.card button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.card .link-button {
+  background: none;
+  color: #9bbcff;
+  font-size: 14px;
+}
+
+.error {
+  min-height: 1.2em;
+  margin: 12px 0 0;
+  color: #ff8080;
+  font-size: 14px;
+}
+
+.loading {
+  text-align: center;
+}
+
+/* ---------- Logout button ---------- */
+
+#logout-button {
+  position: fixed;
+  /* env(safe-area-inset-*) keeps it away from the phone notch. */
+  top: calc(8px + env(safe-area-inset-top));
+  right: calc(8px + env(safe-area-inset-right));
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 14px;
+  z-index: 5;
+}
+
+/* ---------- Virtual joystick (touch devices only) ---------- */
+
+/* CSS keeps it in the bottom-left corner, so it stays in place after a resize or rotation. */
+.joystick-base {
+  position: fixed;
+  left: calc(24px + env(safe-area-inset-left));
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 5;
+}
+
+.joystick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 50px;
+  height: 50px;
+  margin: -25px 0 0 -25px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  /* Moved with transform from JavaScript. */
+  pointer-events: none;
+}
