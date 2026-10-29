@@ -4,13 +4,22 @@
 //
 // URLs:
 //   GET  /auth-check                     → 200 if the token is OK, 401 if not (used by the browser to explain errors)
-//   WS   /parties/world/<room>?token=     → join a game room as a player
-//   WS   /parties/world/<room>?spectator=1 → watch a game room without logging in (read-only)
+//   WS   /parties/world/<room>?token=...     → join a game room as a logged-in player
+//   WS   /parties/world/<room>?guest=1       → join as a guest (no login; the room picks the id and name)
+//   WS   /parties/world/<room>?spectator=1   → watch without a fish (read-only; used when the tank is full)
+//   (guests and players may also send &handoff=... to keep their place, see shared/protocol.js)
 
 import { routePartykitRequest } from 'partyserver';
 import { verifyToken, getBearerToken, isAllowedOrigin } from './auth.js';
-import { ALLOWED_ROOMS, SPECTATOR_QUERY_FLAG } from '../../shared/protocol.js';
-import { PLAYER_ID_HEADER, PLAYER_NAME_HEADER, SPECTATOR_HEADER } from './WorldRoom.js';
+import { ALLOWED_ROOMS, SPECTATOR_QUERY_FLAG, GUEST_QUERY_FLAG } from '../../shared/protocol.js';
+import {
+  PLAYER_ID_HEADER,
+  PLAYER_NAME_HEADER,
+  CONNECTION_KIND_HEADER,
+  KIND_USER,
+  KIND_GUEST,
+  KIND_SPECTATOR,
+} from './WorldRoom.js';
 
 // Wrangler needs the Durable Object class exported from the main file.
 export { WorldRoom } from './WorldRoom.js';
@@ -49,19 +58,17 @@ async function checkConnection(request, lobby, env) {
 
   const url = new URL(request.url);
 
-  // A spectator: a logged-out visitor watching the world behind the login
-  // form. No token needed. The room decides if there is space (see
-  // WorldRoom.js) and never lets them send anything.
-  if (url.searchParams.get(SPECTATOR_QUERY_FLAG) === '1') {
-    // Drop a token if one was sent anyway: a spectator is never a player.
+  // A spectator (someone who could not get into a full tank) or a guest
+  // (plays without logging in). No token needed. The room decides if there
+  // is space, and creates a guest's id and name itself (see WorldRoom.js).
+  const kind =
+    url.searchParams.get(SPECTATOR_QUERY_FLAG) === '1' ? KIND_SPECTATOR
+    : url.searchParams.get(GUEST_QUERY_FLAG) === '1' ? KIND_GUEST
+    : null;
+  if (kind) {
+    // Drop a token if one was sent anyway: they are never a logged-in player.
     url.searchParams.delete('token');
-    const spectatorRequest = new Request(url.toString(), request);
-    // Only this Worker sets these headers. Remove any a client sent, so
-    // nobody can pretend to be a player without a valid token.
-    spectatorRequest.headers.delete(PLAYER_ID_HEADER);
-    spectatorRequest.headers.delete(PLAYER_NAME_HEADER);
-    spectatorRequest.headers.set(SPECTATOR_HEADER, '1');
-    return spectatorRequest;
+    return withRoleHeaders(new Request(url.toString(), request), kind, null);
   }
 
   // Browsers cannot set headers on a WebSocket, so the token comes in the URL.
@@ -76,18 +83,29 @@ async function checkConnection(request, lobby, env) {
   // Remove the token from the URL before passing it on. PartyServer saves the
   // URL on the connection, and we do not want the token stored anywhere.
   url.searchParams.delete('token');
-  const checkedRequest = new Request(url.toString(), request);
+  return withRoleHeaders(new Request(url.toString(), request), KIND_USER, player);
+}
 
-  // Tell the room who this is. We ALWAYS overwrite these headers, so a client
-  // cannot send its own fake ones. The room trusts only these values, never
-  // a name sent inside a message.
-  checkedRequest.headers.set(PLAYER_ID_HEADER, player.id);
-  // Usernames can be Chinese, but HTTP headers only allow plain ASCII text.
-  // encodeURIComponent turns the name into safe ASCII (the room decodes it).
-  checkedRequest.headers.set(PLAYER_NAME_HEADER, encodeURIComponent(player.name));
-  // A logged-in player is never a spectator, whatever headers a client sent.
-  checkedRequest.headers.delete(SPECTATOR_HEADER);
-  return checkedRequest;
+// Sets the headers that tell the room WHO this connection is.
+// Only this Worker sets them: we first REMOVE every role header a client may
+// have sent, then set the right ones. So nobody can pretend to be a
+// registered user (or choose a guest's id or name). The room trusts only
+// these values, never a name sent inside a message.
+//   kind:   KIND_USER, KIND_GUEST or KIND_SPECTATOR
+//   player: { id, name } from the verified token (users only), else null
+function withRoleHeaders(request, kind, player) {
+  request.headers.delete(PLAYER_ID_HEADER);
+  request.headers.delete(PLAYER_NAME_HEADER);
+  request.headers.delete(CONNECTION_KIND_HEADER);
+
+  request.headers.set(CONNECTION_KIND_HEADER, kind);
+  if (player) {
+    request.headers.set(PLAYER_ID_HEADER, player.id);
+    // Usernames can be Chinese, but HTTP headers only allow plain ASCII text.
+    // encodeURIComponent turns the name into safe ASCII (the room decodes it).
+    request.headers.set(PLAYER_NAME_HEADER, encodeURIComponent(player.name));
+  }
+  return request;
 }
 
 // GET /auth-check with "Authorization: Bearer <token>".

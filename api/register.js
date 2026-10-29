@@ -6,7 +6,7 @@
 import { ObjectId } from 'mongodb';
 import { getUsersCollection, toPublicUser } from './_lib/db.js';
 import { createToken, hashPassword } from './_lib/auth.js';
-import { checkUsername, checkPassword, toUsernameLower } from '../shared/validate.js';
+import { checkNewUsername, checkPassword, toUsernameLower } from '../shared/validate.js';
 import { allowMethod, readBody, sendJson, sendError, handleServerError } from './_lib/http.js';
 
 // MongoDB error code for "this value breaks a unique index".
@@ -22,7 +22,8 @@ export default async function handler(req, res) {
 
   // Check the input first. This is the real check: the browser check
   // can be skipped by anyone calling the API directly.
-  const usernameError = checkUsername(username);
+  // checkNewUsername: the normal rules, plus no names starting with "guest".
+  const usernameError = checkNewUsername(username);
   if (usernameError) return sendError(res, 400, usernameError);
 
   const passwordError = checkPassword(password);

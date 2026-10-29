@@ -9,22 +9,33 @@
 //     bumps into walls, and is what the camera and the name label follow.
 //     (Named "sprite" because the rest of the game uses that name for
 //     "the thing with the player's position".)
-//   - `image`: the fish picture drawn on top. It bobs, wiggles its tail and
-//     tilts. These are only for looks, so they never push the hit box into
-//     a wall, shake the camera, or make the name label wobble.
+//   - `image`: the animated fish drawn on top. It plays the swim cycle, bobs
+//     and tilts. These are only for looks, so they never push the hit box
+//     into a wall, shake the camera, or make the name label wobble.
 
 import Phaser from 'phaser';
 import { MOVE_SPEED, PLAYER_HITBOX, PLAYER_VISIBLE } from '../../shared/world.js';
 import { depthFade, MIN_VISIBILITY_OWN_FISH, MIN_VISIBILITY_OTHER_FISH } from './depthFade.js';
 
-// ---------- The picture ----------
-// One frame, 44 x 26 px, facing LEFT (made by tools/make-fish-sprite.js).
-const FISH_IMAGE_KEY = 'fish-clownfish';
-const FISH_IMAGE_URL = 'assets/sprites/fish/clownfish.png';
+// ---------- The swim animation ----------
+// A sprite sheet with the frames of one swim cycle side by side, facing LEFT
+// (made by tools/make-fish-animation.js; it prints these numbers).
+const FISH_SHEET_KEY = 'fish-clownfish-swim';
+const FISH_SHEET_URL = 'assets/sprites/fish/clownfish-swim.png';
+const FRAME_WIDTH = 45;
+const FRAME_HEIGHT = 27;
+const FRAME_COUNT = 8;
+const SWIM_ANIMATION = 'fish-swim';
+
+// The swim cycle plays faster when the fish swims faster:
+// IDLE_FRAMES_PER_SECOND when floating still, FAST_FRAMES_PER_SECOND at full
+// speed, and smoothly in between.
+const IDLE_FRAMES_PER_SECOND = 4;
+const FAST_FRAMES_PER_SECOND = 14;
 
 // ---------- Name label position ----------
 // Distance (in game pixels) from the fish's center up to the bottom of the
-// name label: the top of the fish (13 px) plus a small gap.
+// name label: the top of the fish (14 px) plus a small gap.
 // PlayerOverlay.js uses it to place the name and chat bubble.
 export const LABEL_OFFSET_Y = PLAYER_VISIBLE.top + 3;
 
@@ -37,14 +48,10 @@ const SLOW_DOWN_SECONDS = 0.6;
 // Below this speed (pixels per second), the fish counts as "not moving".
 const STILL_SPEED = 6;
 
-// ---------- Fake animation (one picture, moved in code) ----------
+// ---------- Extra movement (done in code, on top of the frames) ----------
 // Idle bob: a gentle up and down while floating.
 const BOB_PIXELS = 1.5;
 const BOB_SECONDS = 2.5; // one full up-and-down
-// Tail kick: the fish gets a little longer and thinner, then shorter and
-// fatter, a few times per second while swimming. Stronger when faster.
-const KICK_AMOUNT = 0.07; // 7% squash/stretch at full speed
-const KICKS_PER_SECOND = 4;
 // Tilt: nose up when swimming up, nose down when swimming down.
 const TILT_MAX_DEGREES = 15;
 // How softly the tilt follows the movement (seconds), so it never snaps.
@@ -53,9 +60,26 @@ const TILT_SOFTNESS_SECONDS = 0.25;
 const REMOTE_SPEED_SOFTNESS_SECONDS = 0.15;
 
 export class Player {
-  // Queues the fish picture for loading. Call this in a scene's preload().
+  // Queues the fish sprite sheet for loading. Call this in a scene's preload().
   static preload(scene) {
-    scene.load.image(FISH_IMAGE_KEY, FISH_IMAGE_URL);
+    scene.load.spritesheet(FISH_SHEET_KEY, FISH_SHEET_URL, {
+      frameWidth: FRAME_WIDTH,
+      frameHeight: FRAME_HEIGHT,
+    });
+  }
+
+  // Makes the swim animation. Animations belong to the whole game, so this
+  // only needs to run once (BootScene calls it after loading).
+  static createAnimations(scene) {
+    if (scene.anims.exists(SWIM_ANIMATION)) return;
+    scene.anims.create({
+      key: SWIM_ANIMATION,
+      frames: scene.anims.generateFrameNumbers(FISH_SHEET_KEY, { start: 0, end: FRAME_COUNT - 1 }),
+      // The base speed. Each fish speeds it up or slows it down with its own
+      // "timeScale" (see draw), so this number is just the reference.
+      frameRate: FAST_FRAMES_PER_SECOND,
+      repeat: -1, // loop forever
+    });
   }
 
   // options.physics: true for the local player. Remote fish do not need
@@ -83,8 +107,10 @@ export class Player {
       this.sprite.body.setCollideWorldBounds(true);
     }
 
-    // The fish picture.
-    this.image = scene.add.image(x, y, FISH_IMAGE_KEY);
+    // The animated fish. Each fish starts on a random frame, so a group of
+    // fish does not all move their fins in step.
+    this.image = scene.add.sprite(x, y, FISH_SHEET_KEY);
+    this.image.play({ key: SWIM_ANIMATION, startFrame: Math.floor(Math.random() * FRAME_COUNT) });
 
     // The movement the picture is animated from (pixels per second).
     this.velocity = { x: 0, y: 0 };
@@ -189,8 +215,10 @@ export class Player {
     const bobPhase = ((time + this.bobOffset) / (BOB_SECONDS * 1000)) * Math.PI * 2;
     const bob = Math.sin(bobPhase) * BOB_PIXELS * (1 - speedShare);
 
-    // Tail kick: stretch longer/thinner, then shorter/fatter.
-    const kick = Math.sin((time / 1000) * KICKS_PER_SECOND * Math.PI * 2) * KICK_AMOUNT * speedShare;
+    // Swim cycle speed: slow fin movement when floating, fast when swimming.
+    // timeScale 1 = the animation's base speed (FAST_FRAMES_PER_SECOND).
+    const framesPerSecond = IDLE_FRAMES_PER_SECOND + (FAST_FRAMES_PER_SECOND - IDLE_FRAMES_PER_SECOND) * speedShare;
+    this.image.anims.timeScale = framesPerSecond / FAST_FRAMES_PER_SECOND;
 
     // Tilt. The picture faces left. In Phaser, a positive angle turns
     // clockwise, which lifts the LEFT end. So:
@@ -202,7 +230,6 @@ export class Player {
 
     this.image.setPosition(x, y + bob);
     this.image.setFlipX(this.facing === 'right');
-    this.image.setScale(1 + kick, 1 - kick);
     this.image.setAngle(this.tilt);
     // Fish lower on the screen are drawn in front of ones higher up.
     this.image.setDepth(y);

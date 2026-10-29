@@ -11,8 +11,8 @@
 import { CHAT_MAX_CHARS } from '../../shared/protocol.js';
 import { onTouchModeChange } from './touchMode.js';
 
-// Show the "72/80" counter from this many characters on.
-const COUNTER_FROM = 60;
+// Show the "72/80" counter when this many characters (or fewer) are left.
+const COUNTER_WHEN_LEFT = 20;
 
 // How long a notice stays on screen.
 const NOTICE_MS = 3000;
@@ -20,9 +20,12 @@ const NOTICE_MS = 3000;
 export class ChatInput {
   // onSend(text):        the player sent a message (already trimmed, never empty)
   // onOpenChange(open):  the box opened or closed (used to stop movement)
-  constructor({ onSend, onOpenChange }) {
+  // maxChars:            the longest message allowed (guests get a shorter
+  //                      limit, GUEST_CHAT_MAX_CHARS; the server checks it too)
+  constructor({ onSend, onOpenChange, maxChars = CHAT_MAX_CHARS }) {
     this.onSend = onSend;
     this.onOpenChange = onOpenChange;
+    this.maxChars = maxChars;
 
     this.bar = document.getElementById('chat-bar');
     this.input = document.getElementById('chat-input');
@@ -35,7 +38,7 @@ export class ChatInput {
     this.noticeTimer = null;
     // The browser's own limit. It counts UTF-16 units, so an emoji counts as 2.
     // The server counts real characters, so this is never more than the server allows.
-    this.input.maxLength = CHAT_MAX_CHARS;
+    this.input.maxLength = maxChars;
 
     // We keep every listener in a list, so destroy() can remove them all.
     this.listeners = [];
@@ -101,6 +104,8 @@ export class ChatInput {
   // Enter anywhere in the game opens the box.
   onWindowKeyDown(event) {
     if (this.isOpen || event.key !== 'Enter') return;
+    // Ignore Enter while the login popup is open: it belongs to the popup.
+    if (document.getElementById('auth-screen')?.hidden === false) return;
     // Ignore Enter while typing in any other text box.
     const tag = event.target?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
@@ -140,8 +145,8 @@ export class ChatInput {
   // Shows "72/80" when the text is close to the limit.
   updateCounter() {
     const count = Array.from(this.input.value).length;
-    this.counter.hidden = count < COUNTER_FROM;
-    this.counter.textContent = `${count}/${CHAT_MAX_CHARS}`;
+    this.counter.hidden = count < this.maxChars - COUNTER_WHEN_LEFT;
+    this.counter.textContent = `${count}/${this.maxChars}`;
   }
 
   // Keeps the chat box just above the phone keyboard.

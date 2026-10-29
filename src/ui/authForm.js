@@ -1,13 +1,16 @@
-// The HTML login / register form that sits on top of the game.
+// The HTML login / register popup that sits on top of the game.
 // It checks the input, calls the API, and shows friendly error messages.
 // When login works, it calls onLoggedIn({ token, user }).
+// The player can close it (X button, Esc, or a click outside the card) to
+// go on playing as a guest; then it calls onClose().
 
 import { login, register } from './api.js';
-import { checkUsername, checkPassword } from '../../shared/validate.js';
+import { checkNewUsername, checkPassword } from '../../shared/validate.js';
 
 // Sets up the form and returns functions to show or hide it.
-export function createAuthForm({ onLoggedIn }) {
+export function createAuthForm({ onLoggedIn, onClose }) {
   const screen = document.getElementById('auth-screen');
+  const closeButton = document.getElementById('auth-close');
   const form = document.getElementById('auth-form');
   const loading = document.getElementById('auth-loading');
   const fields = document.getElementById('auth-fields');
@@ -56,7 +59,7 @@ export function createAuthForm({ onLoggedIn }) {
       return null;
     }
     return (
-      checkUsername(username) ||
+      checkNewUsername(username) ||
       checkPassword(password) ||
       (password !== confirmInput.value ? 'The two passwords do not match' : null)
     );
@@ -100,6 +103,32 @@ export function createAuthForm({ onLoggedIn }) {
 
   applyMode();
 
+  // ---------- Closing the popup ----------
+  // True while the popup is shown (or fading in).
+  let isOpen = false;
+
+  // The player closed the popup without logging in.
+  function close() {
+    if (!isOpen) return;
+    fadeOut();
+    onClose();
+  }
+
+  closeButton.addEventListener('click', close);
+
+  // A click on the dark area around the card (not on the card itself).
+  screen.addEventListener('click', (event) => {
+    if (event.target === screen) close();
+  });
+
+  // Esc, wherever the focus is.
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && isOpen) {
+      event.preventDefault();
+      close();
+    }
+  });
+
   // ---------- Fading the popup in and out ----------
   // The popup sits on top of the running world. It fades instead of
   // popping, so going in and out of the game feels smooth.
@@ -108,6 +137,7 @@ export function createAuthForm({ onLoggedIn }) {
   let fadeTimer = null;
 
   function fadeIn() {
+    isOpen = true;
     clearTimeout(fadeTimer);
     if (!screen.hidden && !screen.classList.contains('is-fading')) return;
     screen.classList.add('is-fading');
@@ -119,6 +149,10 @@ export function createAuthForm({ onLoggedIn }) {
   }
 
   function fadeOut() {
+    isOpen = false;
+    // Take the focus out of the popup, so Enter opens the chat again
+    // instead of pressing a popup button.
+    if (screen.contains(document.activeElement)) document.activeElement.blur();
     clearTimeout(fadeTimer);
     screen.classList.add('is-fading');
     // After the fade, really hide it, so it cannot catch taps or clicks.
@@ -140,11 +174,19 @@ export function createAuthForm({ onLoggedIn }) {
       fadeIn();
       loading.hidden = true;
       fields.hidden = false;
+      // Always start on "Log in" (the player may have left it on "Create").
+      mode = 'login';
+      applyMode();
       showError(message);
     },
 
+    // Hides it after a login (does not call onClose).
     hide() {
       fadeOut();
+    },
+
+    isOpen() {
+      return isOpen;
     },
   };
 }

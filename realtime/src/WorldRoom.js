@@ -1,14 +1,19 @@
 // One game room: a Durable Object that holds everyone in one map.
-// All players in the room connect to the SAME object, so it can see everyone
+// All fish in the room connect to the SAME object, so it can see everyone
 // and send them each other's positions.
 //
-// It does six jobs:
-//   1. Keep a list of players (who is here and where they are).
-//   2. Check every `move` message (not too fast, not off the map).
-//   3. Send everyone one `state` message 10 times per second (the "tick").
-//   4. Allow only one connection per account.
-//   5. Check chat messages and send them to the players.
-//   6. Let logged-out visitors watch ("spectators"), read-only and limited.
+// It does these jobs:
+//   1. Keep a list of fish: logged-in players and guests (who is here, where).
+//   2. Create guests: the room gives each guest an id and a name. The
+//      browser cannot choose them.
+//   3. Check every `move` message (not too fast, not off the map).
+//   4. Send everyone one `state` message 10 times per second (the "tick").
+//   5. Allow only one connection per account.
+//   6. Check chat messages and send them to the fish (stricter for guests).
+//   7. "Handoff": keep a fish's place when the page reconnects (login,
+//      logout, dropped connection, "Rejoin").
+//   8. Protect the free plan: at most MAX_FISH_PER_ROOM fish, close idle
+//      fish, and let extra visitors watch as limited "spectators".
 
 import { Server } from 'partyserver';
 import {
@@ -18,16 +23,24 @@ import {
   MAX_CHAT_MESSAGE_BYTES,
   MAX_MESSAGES_PER_SECOND,
   CHAT_MAX_CHARS,
+  GUEST_CHAT_MAX_CHARS,
   CLOSE_REPLACED,
   CLOSE_SPECTATORS_FULL,
   CLOSE_SPECTATOR_TIME_UP,
+  CLOSE_TANK_FULL,
+  CLOSE_IDLE,
   MAX_SPECTATORS,
   SPECTATOR_MAX_MS,
+  MAX_FISH_PER_ROOM,
+  GUEST_IDLE_MS,
+  PLAYER_IDLE_MS,
+  HANDOFF_QUERY_NAME,
+  HANDOFF_MS,
 } from '../../shared/protocol.js';
 import { MOVE_SPEED, FACINGS } from '../../shared/world.js';
 import { clampToMap, slideMove, findFreeSpot, pickSpawnPoint } from '../../shared/mapInfo.js';
 import { worldMap } from './worldMap.js';
-import { cleanChatText, countCharacters, ChatLimiter } from './chat.js';
+import { cleanChatText, countCharacters, ChatLimiter, PLAYER_CHAT_LIMITS, GUEST_CHAT_LIMITS } from './chat.js';
 import { moderateMessage } from './moderation.js';
 
 // When checking walls, the server makes the fish's hit box 1 px smaller than
@@ -44,8 +57,17 @@ const NOTICE_BLOCKED = 'Your message was not sent';
 // them (it removes any that a client sent).
 export const PLAYER_ID_HEADER = 'X-Player-Id';
 export const PLAYER_NAME_HEADER = 'X-Player-Name';
-// "1" for a spectator (a logged-out visitor watching, no token).
-export const SPECTATOR_HEADER = 'X-Spectator';
+// What kind of connection this is: one of the KIND_ values below.
+export const CONNECTION_KIND_HEADER = 'X-Connection-Kind';
+export const KIND_USER = 'user'; // logged in (id and name from the verified token)
+export const KIND_GUEST = 'guest'; // no login (the room makes the id and name)
+export const KIND_SPECTATOR = 'spectator'; // watches only (the tank was full)
+
+// Guest names: "Guest_" + 4 random digits, never the same as another fish's.
+const GUEST_NAME_START = 'Guest_';
+
+// How often to look for idle fish (it does not need to be exact).
+const IDLE_CHECK_EVERY_MS = 5000;
 
 // ---------- Movement check ----------
 // Each player has a "movement allowance" in pixels, like a bucket of water.
@@ -61,10 +83,10 @@ const SPEED_TOLERANCE = 1.2;
 // The bucket holds at most this much (half a second of walking).
 const MAX_ALLOWANCE = MOVE_SPEED * 0.5;
 
-// We remember where players were when they left, so a QUICK reconnect
-// (for example a dropped phone connection) puts them back in the same spot.
-// After this long, a returning player starts in the shallow spawn area
-// again, like a new visit, and the saved spot is thrown away.
+// We remember where logged-in players were when they left, so a QUICK
+// reconnect (for example a dropped phone connection, without a handoff)
+// puts them back in the same spot. After this long, a returning player
+// starts in the shallow spawn area again, like a new visit.
 const QUICK_RECONNECT_MS = 60_000;
 // Also never keep more than this many saved spots (extra safety for memory).
 // This is only in memory: it is lost when the room shuts down.
@@ -74,30 +96,40 @@ const MAX_REMEMBERED_POSITIONS = 1000;
 export class WorldRoom extends Server {
   // No hibernation. While anyone is online, our 10-per-second tick keeps the
   // object awake anyway, so hibernation would not save anything. When no
-  // PLAYERS are left we stop the tick, and when nobody at all is connected,
+  // fish are left we stop the tick, and when nobody at all is connected,
   // Cloudflare can shut the object down.
   // Note: an open spectator connection also keeps the object running (and
   // counting free-plan run time), even with the tick stopped. That is why
-  // spectators are capped (MAX_SPECTATORS) and closed after SPECTATOR_MAX_MS.
+  // spectators are capped (MAX_SPECTATORS) and closed after SPECTATOR_MAX_MS,
+  // fish are capped (MAX_FISH_PER_ROOM) and idle fish are closed.
   // Run time is counted per object, not per connection, so one room can use
   // at most 24 h × 128 MB = 10,800 GB-s a day, under the free 13,000.
   static options = { hibernate: false };
 
-  // Player id → player object (see onConnect for the fields).
+  // Fish id → fish object (see onConnect for the fields). Players AND guests.
   players = new Map();
 
-  // Connection id → player id. Lets us find the player for a message.
+  // Connection id → fish id. Lets us find the fish for a message.
   playerIdByConnection = new Map();
 
-  // Player id → { x, y, leftAt }, where they were when they left, and when.
+  // User id → { x, y, leftAt }, where a logged-in player was when they left.
   // Oldest first (see rememberPosition), so old ones are easy to remove.
   lastPositions = new Map();
 
-  // Ids of players that moved since the last tick.
+  // Handoff token → either
+  //   { playerId }                            the fish is still connected
+  //   { saved: { x, y, facing, guest }, expiresAt }   the fish has left
+  // (`guest` is { id, name } if it was a guest, so a guest gets them back.)
+  handoffs = new Map();
+
+  // Ids of fish that moved since the last tick.
   changedIds = new Set();
 
   // The setInterval handle of the tick, or null when the tick is stopped.
   tickTimer = null;
+
+  // When we last looked for idle fish.
+  lastIdleCheckAt = 0;
 
   // Spectators: connection id → the timer that closes them after SPECTATOR_MAX_MS.
   // Spectators are NOT in `players`: they are not counted, not shown, and
@@ -105,72 +137,120 @@ export class WorldRoom extends Server {
   spectators = new Map();
 
   // Called when a WebSocket connection is open.
-  // index.js has already checked the origin and the room name, and either
-  // the token (players) or the spectator flag (spectators).
+  // index.js has already checked the origin and the room name, set the
+  // connection kind, and (for logged-in players) checked the token.
   onConnect(connection, ctx) {
-    if (ctx.request.headers.get(SPECTATOR_HEADER) === '1') {
+    const kind = ctx.request.headers.get(CONNECTION_KIND_HEADER);
+    if (kind === KIND_SPECTATOR) {
       this.addSpectator(connection);
       return;
     }
-
-    const id = ctx.request.headers.get(PLAYER_ID_HEADER);
-    const name = decodeName(ctx.request.headers.get(PLAYER_NAME_HEADER));
-    if (!id || !name) {
-      // Should never happen, because index.js always sets these headers.
-      connection.close(1008, 'Not logged in');
+    if (kind !== KIND_USER && kind !== KIND_GUEST) {
+      // Should never happen, because index.js always sets the kind.
+      connection.close(1008, 'Unknown connection');
       return;
     }
 
-    // One character per account. If this user is already connected
-    // (another tab or device), close the OLD connection.
-    const oldPlayer = this.players.get(id);
-    if (oldPlayer) {
-      const oldConnection = this.getConnection(oldPlayer.connectionId);
-      oldConnection?.close(CLOSE_REPLACED, 'Logged in somewhere else');
+    // A handoff token from the page's previous connection (if any, and valid).
+    const token = new URL(ctx.request.url).searchParams.get(HANDOFF_QUERY_NAME);
+    const handoff = this.takeHandoff(token);
+
+    // Who is this?
+    //   Logged-in player: id and name from the verified token (via index.js).
+    //   Guest with a handoff from a guest: the SAME guest again (reconnect).
+    //   Other guests: a new guest, made here. The browser cannot choose it.
+    let id;
+    let name;
+    if (kind === KIND_USER) {
+      id = ctx.request.headers.get(PLAYER_ID_HEADER);
+      name = decodeName(ctx.request.headers.get(PLAYER_NAME_HEADER));
+      if (!id || !name) {
+        connection.close(1008, 'Not logged in');
+        return;
+      }
+    } else if (handoff?.guest) {
+      ({ id, name } = handoff.guest);
+    } else {
+      ({ id, name } = this.newGuestIdentity());
     }
 
-    // Where does this player start?
-    //   - Taking over from another tab ("Play here"): where the fish is now.
-    //   - Back within QUICK_RECONNECT_MS of leaving: where they left.
-    //   - Otherwise: a random spot in the shallow spawn area (shared code,
-    //     so the browser and the server use the same area and rules).
+    // If the handoff's fish is still connected (the new connection came in
+    // before the old one closed), it is replaced now: removed (or, if it is
+    // the same fish, simply taken over below).
+    if (handoff?.livePlayer && handoff.livePlayer.id !== id) {
+      this.removeFish(handoff.livePlayer, { closeCode: CLOSE_REPLACED, keepHandoff: false });
+    }
+
+    // The same fish already here: another tab of the same account ("Play
+    // here"), or a guest reconnecting before its old connection closed.
+    const oldPlayer = this.players.get(id);
+
+    // Is there room? A handoff or a takeover never adds a fish, so it is
+    // never refused. (A guest who logs in keeps their place.)
+    if (!handoff && !oldPlayer && this.players.size >= MAX_FISH_PER_ROOM) {
+      connection.close(CLOSE_TANK_FULL, 'The tank is full');
+      return;
+    }
+
+    if (oldPlayer) {
+      // Close the OLD connection. One fish per account.
+      this.playerIdByConnection.delete(oldPlayer.connectionId);
+      this.handoffs.delete(oldPlayer.handoff);
+      this.getConnection(oldPlayer.connectionId)?.close(CLOSE_REPLACED, 'Logged in somewhere else');
+    }
+
+    // Where does this fish start?
+    //   1. A handoff: where the page's previous fish was.
+    //   2. Taking over the same fish: where it is now.
+    //   3. A logged-in player back within QUICK_RECONNECT_MS: where they left.
+    //   4. Otherwise: a random spot in the shallow spawn area.
+    // A remembered spot may now be inside a wall (if the map changed), so it
+    // goes to the nearest free spot. pickSpawnPoint is always free already.
     this.forgetOldPositions();
-    const remembered = oldPlayer || this.lastPositions.get(id);
-    // A remembered spot may now be inside a wall (if the map changed), so
-    // move it to the nearest free spot. pickSpawnPoint is always free already.
+    const remembered = handoff || oldPlayer || (kind === KIND_USER ? this.lastPositions.get(id) : null);
     const start = remembered ? findFreeSpot(worldMap, remembered.x, remembered.y) : pickSpawnPoint(worldMap);
 
+    const isGuest = kind === KIND_GUEST;
+    const now = Date.now();
     const player = {
       id,
       name,
+      kind,
       connectionId: connection.id,
       x: start.x,
       y: start.y,
-      facing: oldPlayer?.facing || 'left',
+      facing: remembered?.facing || 'left',
       moving: false,
       // For the movement check.
       allowance: MAX_ALLOWANCE,
-      lastMoveAt: Date.now(),
+      lastMoveAt: now,
+      // For closing idle fish: the last time they moved or chatted.
+      lastActiveAt: now,
       // For the message rate limit.
       messageWindowStart: 0,
       messageCount: 0,
-      // For the chat limits (speed, duplicates).
-      chat: new ChatLimiter(),
+      // For the chat limits (speed, duplicates). Stricter for guests.
+      chat: new ChatLimiter(isGuest ? GUEST_CHAT_LIMITS : PLAYER_CHAT_LIMITS),
+      // This connection's handoff token (sent in `welcome`).
+      handoff: crypto.randomUUID(),
     };
     this.players.set(id, player);
     this.playerIdByConnection.set(connection.id, id);
+    this.handoffs.set(player.handoff, { playerId: id });
 
-    // Tell the new player who they are and who is already here.
+    // Tell the new fish who they are and who is already here.
     this.sendTo(connection, {
       type: MSG.WELCOME,
       you: id,
       players: [...this.players.values()].map(toPublicPlayer),
       // Lets the browser check that it has the same map as the server.
       map: worldMap.fingerprint,
+      // The secret to send with the page's next connection (see shared/protocol.js).
+      handoff: player.handoff,
     });
 
     if (oldPlayer) {
-      // Others already know this player. Just send the (maybe new) position.
+      // Others already know this fish. Just send the (maybe new) position.
       this.changedIds.add(id);
     } else {
       this.broadcastJson({ type: MSG.JOIN, player: toPublicPlayer(player) }, [connection.id]);
@@ -179,9 +259,9 @@ export class WorldRoom extends Server {
     this.startTick();
   }
 
-  // A logged-out visitor wants to watch. They get the same position updates
-  // as players (welcome, join, leave, state), but never chat, and they
-  // cannot send anything (see onMessage).
+  // A visitor who could not get into a full tank watches instead. They get
+  // the same position updates as fish (welcome, join, leave, state), but
+  // never chat, and they cannot send anything (see onMessage).
   addSpectator(connection) {
     if (this.spectators.size >= MAX_SPECTATORS) {
       // Room full of watchers. The close code tells the page not to retry.
@@ -189,8 +269,8 @@ export class WorldRoom extends Server {
       return;
     }
 
-    // Close it after SPECTATOR_MAX_MS, so a login page left open for hours
-    // does not keep the room running. (onClose removes it from the map.)
+    // Close it after SPECTATOR_MAX_MS, so a page left open for hours does
+    // not keep the room running. (onClose removes it from the map.)
     const timer = setTimeout(() => {
       connection.close(CLOSE_SPECTATOR_TIME_UP, 'Spectator time is up');
     }, SPECTATOR_MAX_MS);
@@ -198,12 +278,11 @@ export class WorldRoom extends Server {
 
     this.sendTo(connection, {
       type: MSG.WELCOME,
-      you: null, // not a player
+      you: null, // not a fish
       players: [...this.players.values()].map(toPublicPlayer),
       map: worldMap.fingerprint,
     });
-    // No startTick() here: only players start it. With no players there is
-    // nothing to send anyway (nobody moves).
+    // No startTick() here: only fish start it.
   }
 
   // Called for every message from a connection.
@@ -257,7 +336,7 @@ export class WorldRoom extends Server {
     // Unknown types are ignored.
   }
 
-  // Checks a `chat` message and sends it to everyone.
+  // Checks a `chat` message and sends it to every fish.
   // The order of the checks matters:
   //   clean → empty? → too long? → duplicate? → too fast? → moderation → send
   // Cheap checks come first. Moderation (later an ML model) comes last,
@@ -267,9 +346,14 @@ export class WorldRoom extends Server {
     const text = cleanChatText(data.text);
     if (!text) return;
 
+    // Writing counts as being active (not idle).
+    player.lastActiveAt = now;
+
     // Reject, do not cut. Cutting could change the meaning of a message.
-    // The browser stops at CHAT_MAX_CHARS, so only a modified client gets here.
-    if (countCharacters(text) > CHAT_MAX_CHARS) {
+    // The browser stops at the limit, so only a modified client gets here.
+    // Guests have a shorter limit.
+    const maxCharacters = player.kind === KIND_GUEST ? GUEST_CHAT_MAX_CHARS : CHAT_MAX_CHARS;
+    if (countCharacters(text) > maxCharacters) {
       this.sendNotice(connection, player, NOTICE_TOO_LONG, now);
       return;
     }
@@ -283,10 +367,14 @@ export class WorldRoom extends Server {
     }
     player.chat.remember(text, now);
 
-    // ALL chat goes through moderateMessage(). See moderation.js for the plan.
-    const result = await moderateMessage(text, { id: player.id, name: player.name });
+    // ALL chat goes through moderateMessage(), guests too. See moderation.js.
+    const result = await moderateMessage(text, {
+      id: player.id,
+      name: player.name,
+      guest: player.kind === KIND_GUEST,
+    });
 
-    // Moderation may take time. If the player left or was replaced by another
+    // Moderation may take time. If the fish left or was replaced by another
     // tab meanwhile, do not send anything.
     if (this.players.get(player.id) !== player) return;
 
@@ -300,8 +388,8 @@ export class WorldRoom extends Server {
 
     // Send right away, not on the tick: chat should feel instant.
     // The sender gets it too, so they see the same text everyone else sees.
-    // The name comes from the login token (set in onConnect), never from the client.
-    // Spectators (logged-out visitors) are left out: chat is for players only.
+    // The name comes from the token or the room, never from the client.
+    // Spectators are left out: chat is for the fish only.
     this.broadcastJson(
       {
         type: MSG.CHAT,
@@ -320,13 +408,16 @@ export class WorldRoom extends Server {
     this.sendTo(connection, { type: MSG.NOTICE, text });
   }
 
-  // Checks a `move` message and updates the player's position.
+  // Checks a `move` message and updates the fish's position.
   // NOTE: this movement data will later be used to train an ML model that
   // spots cheaters. Keep the `move` format simple and consistent.
   handleMove(player, data, now) {
     const { x, y, facing, moving } = data;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (!FACINGS.includes(facing) || typeof moving !== 'boolean') return;
+
+    // Moving counts as being active (not idle).
+    player.lastActiveAt = now;
 
     // Refill the movement allowance for the time that passed.
     const seconds = (now - player.lastMoveAt) / 1000;
@@ -369,38 +460,117 @@ export class WorldRoom extends Server {
     this.changedIds.add(player.id);
   }
 
-  // Called when a connection closes (tab closed, network lost, or replaced).
+  // Called when a connection closes (tab closed, network lost, replaced, idle...).
   onClose(connection) {
     // A spectator left (or was closed): just forget them. They never
-    // touched the player list or the tick.
+    // touched the fish list or the tick.
     if (this.spectators.has(connection.id)) {
       clearTimeout(this.spectators.get(connection.id));
       this.spectators.delete(connection.id);
       return;
     }
 
-    const id = this.playerIdByConnection.get(connection.id);
+    const player = this.getPlayerFor(connection);
     this.playerIdByConnection.delete(connection.id);
-    const player = this.players.get(id);
 
-    // Only remove the player if THIS connection still owns them.
-    // When a user was replaced by a new tab, the old connection closes
-    // later, and must not remove the player that the new tab now controls.
+    // Only remove the fish if THIS connection still owns it. When a fish was
+    // replaced (another tab, or a handoff), the old connection closes later
+    // and must not remove the fish the new connection now controls.
     if (player && player.connectionId === connection.id) {
-      this.rememberPosition(player);
-      this.players.delete(id);
-      this.changedIds.delete(id);
-      this.broadcastJson({ type: MSG.LEAVE, id });
-    }
-
-    if (this.players.size === 0) {
-      this.stopTick();
+      this.removeFish(player, { closeCode: null, keepHandoff: true });
     }
   }
 
   onError(connection, error) {
     // Only the message. Never the URL (it could hold a token in other setups).
     console.error(`[room ${this.name}] connection error: ${error?.message}`);
+  }
+
+  // ---------- Fish coming and going ----------
+
+  // Removes a fish from the room and tells everyone.
+  //   closeCode:   close its connection with this code (or null if it is
+  //                already closing)
+  //   keepHandoff: save its place under its handoff token for HANDOFF_MS,
+  //                so the page's next connection can continue from there
+  removeFish(player, { closeCode, keepHandoff }) {
+    this.players.delete(player.id);
+    this.changedIds.delete(player.id);
+    this.playerIdByConnection.delete(player.connectionId);
+
+    if (keepHandoff) {
+      this.handoffs.set(player.handoff, {
+        saved: {
+          x: player.x,
+          y: player.y,
+          facing: player.facing,
+          guest: player.kind === KIND_GUEST ? { id: player.id, name: player.name } : null,
+        },
+        expiresAt: Date.now() + HANDOFF_MS,
+      });
+    } else {
+      this.handoffs.delete(player.handoff);
+    }
+    if (player.kind === KIND_USER) {
+      this.rememberPosition(player);
+    }
+    if (closeCode !== null) {
+      this.getConnection(player.connectionId)?.close(closeCode, 'Replaced');
+    }
+
+    this.broadcastJson({ type: MSG.LEAVE, id: player.id });
+    if (this.players.size === 0) {
+      this.stopTick();
+    }
+  }
+
+  // Uses up a handoff token. Returns null if it is missing, unknown or too
+  // old. Otherwise returns { x, y, facing, guest, livePlayer }:
+  //   livePlayer: the fish, if it is still connected (else null)
+  //   guest:      { id, name } if the old fish was a guest (else null)
+  // A token works only once: it is removed here.
+  takeHandoff(token) {
+    this.forgetOldHandoffs();
+    if (!token) return null;
+    const entry = this.handoffs.get(token);
+    if (!entry) return null;
+    this.handoffs.delete(token);
+
+    if (entry.playerId) {
+      const live = this.players.get(entry.playerId);
+      if (!live) return null;
+      return {
+        x: live.x,
+        y: live.y,
+        facing: live.facing,
+        guest: live.kind === KIND_GUEST ? { id: live.id, name: live.name } : null,
+        livePlayer: live,
+      };
+    }
+    return { ...entry.saved, livePlayer: null };
+  }
+
+  // Removes saved handoffs that are too old.
+  forgetOldHandoffs() {
+    const now = Date.now();
+    for (const [token, entry] of this.handoffs) {
+      if (entry.expiresAt && entry.expiresAt < now) this.handoffs.delete(token);
+    }
+  }
+
+  // A new guest: a random id, and "Guest_" + 4 random digits that no other
+  // fish (or recently left guest) is using.
+  newGuestIdentity() {
+    const usedNames = new Set([...this.players.values()].map((p) => p.name));
+    for (const entry of this.handoffs.values()) {
+      if (entry.saved?.guest) usedNames.add(entry.saved.guest.name);
+    }
+    let name;
+    for (let tries = 0; tries < 50; tries++) {
+      name = GUEST_NAME_START + String(Math.floor(Math.random() * 10_000)).padStart(4, '0');
+      if (!usedNames.has(name)) break;
+    }
+    return { id: `guest:${crypto.randomUUID()}`, name };
   }
 
   // ---------- Tick ----------
@@ -412,15 +582,22 @@ export class WorldRoom extends Server {
   }
 
   // Stops the tick. A running timer keeps the Durable Object awake and costs
-  // free-plan time, so we stop it as soon as the room is empty.
+  // free-plan time, so we stop it as soon as the room has no fish.
   stopTick() {
     clearInterval(this.tickTimer);
     this.tickTimer = null;
   }
 
-  // Sends one `state` message with every player that changed.
+  // Sends one `state` message with every fish that changed, and now and
+  // then closes idle fish.
   // One message per tick (not one per `move`) keeps traffic low and steady.
   tick() {
+    const now = Date.now();
+    if (now - this.lastIdleCheckAt >= IDLE_CHECK_EVERY_MS) {
+      this.lastIdleCheckAt = now;
+      this.closeIdleFish(now);
+    }
+
     if (this.changedIds.size === 0) return;
 
     const changed = [];
@@ -443,6 +620,19 @@ export class WorldRoom extends Server {
     }
   }
 
+  // Closes fish that did not move or chat for too long (guests sooner).
+  // Their place is kept under their handoff token for HANDOFF_MS, so
+  // "Rejoin" soon after brings them back to the same spot.
+  closeIdleFish(now) {
+    for (const player of [...this.players.values()]) {
+      const limit = player.kind === KIND_GUEST ? GUEST_IDLE_MS : PLAYER_IDLE_MS;
+      if (now - player.lastActiveAt > limit) {
+        // onClose removes the fish (and keeps its handoff).
+        this.getConnection(player.connectionId)?.close(CLOSE_IDLE, 'Away for a while');
+      }
+    }
+  }
+
   // ---------- Helpers ----------
 
   getPlayerFor(connection) {
@@ -462,7 +652,7 @@ export class WorldRoom extends Server {
     this.forgetOldPositions();
     // Delete first, so the newest entry moves to the end of the Map.
     this.lastPositions.delete(player.id);
-    this.lastPositions.set(player.id, { x: player.x, y: player.y, leftAt: Date.now() });
+    this.lastPositions.set(player.id, { x: player.x, y: player.y, facing: player.facing, leftAt: Date.now() });
     if (this.lastPositions.size > MAX_REMEMBERED_POSITIONS) {
       // A Map keeps insertion order, so the first key is the oldest.
       const oldestId = this.lastPositions.keys().next().value;
@@ -482,7 +672,8 @@ export class WorldRoom extends Server {
   }
 }
 
-// The fields other players are allowed to see. No connection ids, no limits.
+// The fields other players are allowed to see. No connection ids, no limits,
+// no handoff tokens.
 function toPublicPlayer(player) {
   return {
     id: player.id,
@@ -491,6 +682,7 @@ function toPublicPlayer(player) {
     y: player.y,
     facing: player.facing,
     moving: player.moving,
+    guest: player.kind === KIND_GUEST,
   };
 }
 

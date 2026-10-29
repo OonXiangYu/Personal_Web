@@ -67,8 +67,12 @@ export const MSG = {
 };
 
 // A "Player" in the messages above looks like this:
-//   { id, name, x, y, facing, moving }
-// `id` is the user id from the login token. `name` is the username.
+//   { id, name, x, y, facing, moving, guest }
+// `id` is the user id from the login token (or "guest:..." for a guest).
+// `name` is the username (or "Guest_1234"). `guest` is true for guests.
+//
+// `welcome` also has `handoff` for guests and players (see "Handoff" below),
+// and `you` is the id the server gave you (for a guest, made by the server).
 
 // ---------- Timing ----------
 
@@ -132,3 +136,44 @@ export const MAX_SPECTATORS = 50;
 
 // A spectator connection is closed after this long (10 minutes).
 export const SPECTATOR_MAX_MS = 10 * 60 * 1000;
+
+// "The tank is full": there are already MAX_FISH_PER_ROOM fish (guests and
+// logged-in players). The page must NOT reconnect; it shows the world as a
+// spectator with "The tank is full. You are watching." and a "Try again" button.
+// A guest who logs in is never refused: they already have a fish (see "handoff").
+export const CLOSE_TANK_FULL = 4005;
+
+// "You were away for a while": no movement and no chat for too long
+// (GUEST_IDLE_MS / PLAYER_IDLE_MS). Frees the slot and protects the free plan.
+// The page must NOT reconnect by itself; it shows a "Rejoin" button.
+export const CLOSE_IDLE = 4006;
+
+// ---------- Guests ----------
+// A guest is a visitor who plays without logging in. They connect with this
+// query flag: ?guest=1 . The SERVER creates their id ("guest:" + random) and
+// name ("Guest_" + 4 random digits); the browser cannot choose them.
+// Guests are real players (they swim, chat and are counted), but nothing
+// about them is saved in the database.
+export const GUEST_QUERY_FLAG = 'guest';
+
+// At most this many fish (guests + logged-in players) per room.
+export const MAX_FISH_PER_ROOM = 30;
+
+// Fish with no movement and no chat for this long are closed with CLOSE_IDLE.
+export const GUEST_IDLE_MS = 15 * 60 * 1000; // 15 minutes
+export const PLAYER_IDLE_MS = 30 * 60 * 1000; // 30 minutes
+
+// Guests may chat, but with stricter limits than logged-in players.
+export const GUEST_CHAT_MAX_CHARS = 60;
+
+// ---------- Handoff ----------
+// Every guest or player `welcome` includes `handoff`: a random secret made by
+// the server for that connection. When the page opens its NEXT connection
+// (after logging in, logging out, a dropped connection or "Rejoin"), it sends
+// it back as ?handoff=... . The server then:
+//   - starts the new fish where the old one was (no jump back to the start)
+//   - gives a reconnecting GUEST the same id and name again
+//   - never refuses it as "tank full" (it replaces the old fish's place)
+// A token works once, only for HANDOFF_MS after the old connection closed.
+export const HANDOFF_QUERY_NAME = 'handoff';
+export const HANDOFF_MS = 60 * 1000;

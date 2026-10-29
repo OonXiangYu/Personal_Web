@@ -1,6 +1,7 @@
 // The browser's connection to the real-time game server.
-// It connects with the login token, turns messages into objects, reconnects
-// when the network drops, and works out WHY when it cannot connect.
+// It connects as a logged-in player (with the login token), a guest, or a
+// spectator; turns messages into objects; reconnects when the network drops;
+// and (for players) works out WHY when it cannot connect.
 // It does not know about Phaser. The scene decides what to draw.
 
 import PartySocket from 'partysocket';
@@ -11,7 +12,11 @@ import {
   CLOSE_REPLACED,
   CLOSE_SPECTATORS_FULL,
   CLOSE_SPECTATOR_TIME_UP,
+  CLOSE_TANK_FULL,
+  CLOSE_IDLE,
   SPECTATOR_QUERY_FLAG,
+  GUEST_QUERY_FLAG,
+  HANDOFF_QUERY_NAME,
 } from '../../shared/protocol.js';
 import { loadToken } from '../ui/storage.js';
 import { getMe } from '../ui/api.js';
@@ -40,7 +45,20 @@ const RETRY_BUTTON_AFTER_MS = 30_000;
 const SPECTATOR_MAX_RETRIES = 5;
 
 // After the server closes with one of these codes, never reconnect by itself.
-const NO_RECONNECT_CODES = [CLOSE_REPLACED, CLOSE_SPECTATORS_FULL, CLOSE_SPECTATOR_TIME_UP];
+const NO_RECONNECT_CODES = [
+  CLOSE_REPLACED,
+  CLOSE_SPECTATORS_FULL,
+  CLOSE_SPECTATOR_TIME_UP,
+  CLOSE_TANK_FULL,
+  CLOSE_IDLE,
+];
+
+// The kinds of connection.
+export const KIND = {
+  USER: 'user', // logged in
+  GUEST: 'guest', // playing without logging in
+  SPECTATOR: 'spectator', // watching only (the tank was full)
+};
 
 // The possible connection states. The scene turns these into text.
 export const STATUS = {
@@ -55,18 +73,28 @@ export const STATUS = {
   GAME_REJECTED: 'game-rejected',
   // VITE_REALTIME_HOST is not set. Single player only.
   NOT_CONFIGURED: 'not-configured',
+  // The tank is full (MAX_FISH_PER_ROOM). The page then watches as a spectator.
+  TANK_FULL: 'tank-full',
+  // Closed for being idle too long. The page shows a "Rejoin" button.
+  AWAY: 'away',
 };
 
 export class WorldConnection {
+  // kind: KIND.USER, KIND.GUEST or KIND.SPECTATOR.
+  //   A spectator is read-only, sends no token, and gives up quietly
+  //   instead of retrying forever.
+  // getHandoff(): returns the handoff token from our last `welcome` (or
+  //   null). It is sent with every (re)connection, so the server keeps our
+  //   place, and a guest keeps their name (see shared/protocol.js).
   // handlers:
   //   onMessage(data)    a message from the server (already parsed JSON)
   //   onStatus(status)   the connection state changed (one of STATUS)
   //   onLoginRejected()  our login is no longer valid, go back to the login form
-  // spectator: true for a logged-out visitor watching behind the login form.
-  //   Read-only, no token, and it gives up quietly instead of retrying forever.
-  constructor({ room = DEFAULT_ROOM, spectator = false, onMessage, onStatus, onLoginRejected }) {
+  constructor({ room = DEFAULT_ROOM, kind = KIND.USER, getHandoff = () => null, onMessage, onStatus, onLoginRejected }) {
     this.room = room;
-    this.spectator = spectator;
+    this.kind = kind;
+    this.spectator = kind === KIND.SPECTATOR;
+    this.getHandoff = getHandoff;
     this.onMessage = onMessage;
     this.onStatus = onStatus;
     this.onLoginRejected = onLoginRejected;
@@ -96,13 +124,19 @@ export class WorldConnection {
       host: REALTIME_HOST,
       party: PARTY_NAME,
       room: this.room,
-      // Players: a function, so a fresh token is read on EVERY reconnect
-      // (for example after the player logged in again).
-      // Browsers cannot set headers on WebSockets, so it goes in the URL.
-      // Spectators: no token, just the flag.
-      query: this.spectator
-        ? { [SPECTATOR_QUERY_FLAG]: '1' }
-        : () => ({ token: loadToken() }),
+      // A function, so fresh values are read on EVERY reconnect: the latest
+      // login token and the latest handoff token.
+      // Browsers cannot set headers on WebSockets, so they go in the URL.
+      //   Players:    the login token (+ handoff)
+      //   Guests:     the guest flag (+ handoff). The server picks the name.
+      //   Spectators: just the flag.
+      // (partysocket leaves out values that are null.)
+      query: () => {
+        if (this.kind === KIND.SPECTATOR) return { [SPECTATOR_QUERY_FLAG]: '1' };
+        const handoff = { [HANDOFF_QUERY_NAME]: this.getHandoff() };
+        if (this.kind === KIND.GUEST) return { [GUEST_QUERY_FLAG]: '1', ...handoff };
+        return { token: loadToken(), ...handoff };
+      },
       // Spectators give up after a few failed tries. Watching is only a nice
       // extra, and each try costs a request on the free plan.
       maxRetries: this.spectator ? SPECTATOR_MAX_RETRIES : Infinity,
@@ -110,7 +144,9 @@ export class WorldConnection {
       maxEnqueuedMessages: 0,
       // After these close codes, do NOT reconnect (see shared/protocol.js):
       //   CLOSE_REPLACED: otherwise two tabs would kick each other out forever.
-      //   CLOSE_SPECTATORS_FULL / CLOSE_SPECTATOR_TIME_UP: the room said no.
+      //   CLOSE_SPECTATORS_FULL / CLOSE_SPECTATOR_TIME_UP / CLOSE_TANK_FULL:
+      //     the room said no.
+      //   CLOSE_IDLE: the player was away; they come back with "Rejoin".
       shouldReconnectOnClose: (event) => !NO_RECONNECT_CODES.includes(event.code),
     });
 
@@ -181,6 +217,14 @@ export class WorldConnection {
       this.setStatus(STATUS.REPLACED);
       return;
     }
+    if (event.code === CLOSE_TANK_FULL) {
+      this.setStatus(STATUS.TANK_FULL);
+      return;
+    }
+    if (event.code === CLOSE_IDLE) {
+      this.setStatus(STATUS.AWAY);
+      return;
+    }
 
     // Spectators do not try to find out why: they have no login to check.
     // The world just keeps drifting without players (partysocket retries a
@@ -205,7 +249,9 @@ export class WorldConnection {
     // and then ask the servers directly.
     this.failures += 1;
     this.startProblemTimer();
-    if (this.failures >= FAILURES_BEFORE_CHECK && !this.checkStarted) {
+    // Only logged-in players have a login that could be the reason.
+    // Guests just keep retrying (with backoff) and get "Retry" after a while.
+    if (this.kind === KIND.USER && this.failures >= FAILURES_BEFORE_CHECK && !this.checkStarted) {
       this.checkStarted = true;
       this.findOutWhyFailing();
     }

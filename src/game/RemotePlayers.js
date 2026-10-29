@@ -55,7 +55,8 @@ export class RemotePlayers {
     }
     const player = new Player(this.scene, data.x, data.y, { physics: false });
     player.showState(data.facing, data.moving);
-    this.overlay.addPlayer(data.id, data.name);
+    // Guests get a grey name, so you can tell them from registered players.
+    this.overlay.addPlayer(data.id, data.name, { isGuest: data.guest === true });
 
     this.entries.set(data.id, {
       player,

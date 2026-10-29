@@ -1,19 +1,24 @@
 // The main game scene: the map, the players and the camera.
 // The map comes from Tiled (public/assets/maps/world.tmj, see WorldMap.js).
 //
-// It runs in one of two modes, chosen by the "user" in the registry:
-//   - spectator (no user): behind the login form. The map, other players
-//     walking (read-only connection), and a slowly drifting camera.
-//     No own player, no controls, no chat, no status box.
-//   - player (logged in): your own player, controls, the real-time
-//     connection, chat (input, log, bubbles) and the status box.
-// Logging in or out restarts this scene in the other mode (see createGame.js).
+// It runs in one of these modes, chosen by "mode" in the registry
+// (see mode.js):
+//   - loading:   main.js is still checking a saved login. Map and a slowly
+//                drifting camera only. No connection yet.
+//   - guest:     your own fish (the server picks its name, "Guest_1234"),
+//                controls, the connection, chat and the status box.
+//   - user:      the same, as a logged-in player with your own name.
+//   - spectator: the tank was full. Other fish swimming (read-only
+//                connection), the drifting camera, and a "Try again" button.
+// Logging in or out restarts this scene in another mode (see createGame.js).
+// The handoff token (see shared/protocol.js) keeps the fish in its place.
 
 import Phaser from 'phaser';
 import { Player } from '../Player.js';
 import { RemotePlayers } from '../RemotePlayers.js';
 import { Controls } from '../input/Controls.js';
-import { WorldConnection, STATUS } from '../../net/WorldConnection.js';
+import { WorldConnection, STATUS, KIND } from '../../net/WorldConnection.js';
+import { MODE } from '../mode.js';
 import { showNetStatus, hideNetStatus } from '../../ui/netStatus.js';
 import { PlayerOverlay } from '../../ui/PlayerOverlay.js';
 import { ChatInput } from '../../ui/ChatInput.js';
@@ -24,7 +29,14 @@ import { centerLimits } from '../../../shared/mapInfo.js';
 import { PLAYER_HITBOX } from '../../../shared/world.js';
 import { createOcean, SKY_VIEW_HEIGHT } from '../Ocean.js';
 import { DeepLight } from '../DeepLight.js';
-import { MSG, CLIENT_SEND_INTERVAL_MS } from '../../../shared/protocol.js';
+import { MSG, CLIENT_SEND_INTERVAL_MS, GUEST_CHAT_MAX_CHARS } from '../../../shared/protocol.js';
+
+// Which connection each mode uses (loading has none).
+const KIND_FOR_MODE = {
+  [MODE.GUEST]: KIND.GUEST,
+  [MODE.USER]: KIND.USER,
+  [MODE.SPECTATOR]: KIND.SPECTATOR,
+};
 
 // The message shown when the server has a different map than this page.
 const MAP_OUTDATED_MESSAGE = 'The game was updated. Please refresh the page.';
@@ -58,7 +70,8 @@ export class WorldScene extends Phaser.Scene {
     const { info, collisionLayer } = createWorldMap(this);
     this.mapInfo = info;
 
-    // The ocean behind everything: sky, water gradient, bubbles (see Ocean.js).
+    // The ocean behind everything: the layered sky, water and reef (with
+    // parallax), the depth shade, and bubbles (see Ocean.js).
     createOcean(this, info);
 
     // Darkness in the deep, your light, and the glows of other fish.
@@ -82,14 +95,21 @@ export class WorldScene extends Phaser.Scene {
       this.cameraArea.height,
     );
 
-    // Logged in? (null = a logged-out visitor behind the login form.)
-    const user = this.registry.get('user');
-    this.isSpectator = !user;
+    // Which mode? Guests and logged-in players have their own fish.
+    this.mode = this.registry.get('mode');
+    this.hasFish = this.mode === MODE.GUEST || this.mode === MODE.USER;
+    this.isGuest = this.mode === MODE.GUEST;
 
-    // Where the camera was before this mode started (set by createGame.js
-    // when switching modes), so we can glide instead of jumping.
+    // Our player id. The server tells us in `welcome` (a guest's id is
+    // made by the server), so it is unknown until then.
+    this.myId = null;
+
+    // Where the camera and our fish were before this mode started (set by
+    // createGame.js when switching modes), so we can glide instead of jumping.
     const cameraFrom = this.registry.get('cameraFrom');
+    const fishFrom = this.registry.get('fishFrom');
     this.registry.set('cameraFrom', null);
+    this.registry.set('fishFrom', null);
 
     // True when the server has a different map than this page (see `welcome`).
     this.mapOutdated = false;
@@ -104,13 +124,16 @@ export class WorldScene extends Phaser.Scene {
     this.updateZoom(this.scale.gameSize);
     this.scale.on('resize', this.updateZoom, this);
 
-    if (this.isSpectator) {
-      this.myId = null;
-      // The spectator camera drifts inside the same area as the player camera.
-      this.spectatorCamera = new SpectatorCamera(this, this.cameraArea, this.remotePlayers, cameraFrom);
+    if (this.hasFish) {
+      this.createPlayer(collisionLayer, cameraFrom, fishFrom);
     } else {
-      this.createPlayer(user, collisionLayer, cameraFrom);
+      // No fish of our own (loading, or the tank is full): the camera
+      // drifts inside the same area as the player camera.
+      this.spectatorCamera = new SpectatorCamera(this, this.cameraArea, this.remotePlayers, cameraFrom);
     }
+
+    // True while the login popup is open: our fish stops (see update()).
+    this.paused = false;
 
     // Move the names and bubbles after every drawn frame. "postrender" runs
     // after Phaser has drawn, when the camera position for this frame is
@@ -135,7 +158,7 @@ export class WorldScene extends Phaser.Scene {
       this.events.off('destroy', cleanUp);
       this.scale.off('resize', this.updateZoom, this);
       this.game.events.off('postrender', this.updateOverlay, this);
-      this.connection.close();
+      this.connection?.close();
       hideNetStatus();
       this.chatInput?.destroy();
       this.chatLog?.destroy();
@@ -149,20 +172,23 @@ export class WorldScene extends Phaser.Scene {
     this.events.once('destroy', cleanUp);
   }
 
-  // Player mode only: our own player, walls, controls, chat, camera.
-  createPlayer(user, collisionLayer, cameraFrom) {
+  // Guest and user modes: our own fish, walls, controls, chat, camera.
+  // fishFrom: where the fish of the previous mode was (after login or
+  //           logout), or null.
+  createPlayer(collisionLayer, cameraFrom, fishFrom) {
     const info = this.mapInfo;
 
     // Keep the WHOLE fish inside the map.
     this.setPhysicsBounds();
 
     // The SERVER decides where we start (a random spot in the spawn area, or
-    // our last spot after a quick reconnect) and tells us in `welcome`,
-    // a moment after connecting. Until then, show the fish in the middle of
-    // the spawn area.
+    // our last spot thanks to the handoff token) and tells us in `welcome`,
+    // a moment after connecting. Until then, show the fish where the old
+    // fish was (after login or logout), or in the middle of the spawn area.
     // TODO: start at the user's `lastPosition` from MongoDB instead.
     // (The fish stops at the physics world edges by itself, see Player.js.)
-    this.player = new Player(this, info.spawnCenter.x, info.spawnCenter.y);
+    const start = fishFrom || info.spawnCenter;
+    this.player = new Player(this, start.x, start.y);
 
     // Walls: the fish's hit box cannot enter tiles of the "collision" layer.
     // Arcade physics makes the fish slide along a wall instead of sticking.
@@ -170,9 +196,7 @@ export class WorldScene extends Phaser.Scene {
       this.physics.add.collider(this.player.sprite, collisionLayer);
     }
 
-    // Our player id. It is the user id, the same id the server uses for us.
-    this.myId = user.id;
-    this.overlay.addPlayer(this.myId, user.username, { isLocal: true });
+    // (Our name label is added in `welcome`, when we know our id and name.)
 
     this.controls = new Controls(this);
 
@@ -180,7 +204,9 @@ export class WorldScene extends Phaser.Scene {
     this.chatInput = new ChatInput({
       onSend: (text) => this.sendChat(text),
       // While the chat box is open, the movement keys type letters instead.
-      onOpenChange: (open) => this.controls.setEnabled(!open),
+      onOpenChange: () => this.updateControlsEnabled(),
+      // Guests may send shorter messages (the server checks this too).
+      maxChars: this.isGuest ? GUEST_CHAT_MAX_CHARS : undefined,
     });
 
     // The camera follows the player, but stops at the edges of the camera
@@ -198,6 +224,22 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
+  // Movement keys work only while the chat box is closed AND the login
+  // popup is not open.
+  updateControlsEnabled() {
+    this.controls.setEnabled(!this.chatInput.isOpen && !this.paused);
+  }
+
+  // Checks if main.js paused the game (the login popup opened or closed).
+  checkPaused() {
+    const paused = this.registry.get('paused') === true;
+    if (paused === this.paused) return;
+    this.paused = paused;
+    // Close the chat box, so it does not sit under the popup.
+    if (paused) this.chatInput.close();
+    this.updateControlsEnabled();
+  }
+
   // Moves the HTML names and bubbles to the players' current positions.
   updateOverlay() {
     this.overlay.update(
@@ -211,11 +253,13 @@ export class WorldScene extends Phaser.Scene {
 
   // Phaser calls update() every frame. `time` and `delta` are in milliseconds.
   update(time, delta) {
-    if (this.isSpectator) {
+    if (!this.hasFish) {
       this.remotePlayers.update();
       this.spectatorCamera.update(time, delta);
       return;
     }
+    this.checkPaused();
+    // (While paused, getDirection() returns "stand still".)
     this.player.move(this.controls.getDirection(), delta);
     this.sendMoveIfNeeded(time);
     this.remotePlayers.update();
@@ -229,9 +273,21 @@ export class WorldScene extends Phaser.Scene {
     this.lastSentMove = null;
     this.lastSentAt = 0;
 
+    // Loading: no connection yet. We do not know if this visitor is a
+    // guest or a returning player, and a guest fish that appears for a
+    // moment and then leaves would confuse everyone.
+    this.connection = null;
+    if (this.mode === MODE.LOADING) {
+      this.showStatus();
+      return;
+    }
+
     this.connection = new WorldConnection({
-      // Spectators connect read-only, with no token (see WorldConnection.js).
-      spectator: this.isSpectator,
+      // Guest, user or (read-only) spectator, see WorldConnection.js.
+      kind: KIND_FOR_MODE[this.mode],
+      // The handoff token from the last `welcome`, even from the previous
+      // mode: so after login or logout the fish keeps its place.
+      getHandoff: () => this.registry.get('handoff'),
       onMessage: (data) => this.handleServerMessage(data),
       onStatus: (status) => this.handleNetStatus(status),
       // main.js gave us this function. It shows the login form again.
@@ -245,7 +301,7 @@ export class WorldScene extends Phaser.Scene {
   // everyone, including us. That way we see exactly what others see (later,
   // moderation may mask or block a message).
   sendChat(text) {
-    if (!this.connection.sendChat(text)) {
+    if (!this.connection?.sendChat(text)) {
       this.chatInput.showNotice('Not connected');
     }
   }
@@ -253,6 +309,9 @@ export class WorldScene extends Phaser.Scene {
   // Sends our position at most every CLIENT_SEND_INTERVAL_MS,
   // and only if something changed. Standing still sends nothing.
   sendMoveIfNeeded(time) {
+    // Not before `welcome`: until then our fish is only at a guessed spot,
+    // and sending it would move our real fish away from its kept place.
+    if (!this.myId || !this.connection) return;
     if (time - this.lastSentAt < CLIENT_SEND_INTERVAL_MS) return;
 
     const move = {
@@ -293,8 +352,15 @@ export class WorldScene extends Phaser.Scene {
           );
           this.mapOutdated = true;
         }
-        // data.you is our user id, the same as this.myId
-        // (both are null for a spectator, who has no player of their own).
+        // Keep the handoff token for our next connection (a reconnect, or
+        // the next mode after login or logout). Spectators get none.
+        if (typeof data.handoff === 'string') {
+          this.registry.set('handoff', data.handoff);
+        }
+        // data.you is our player id (null for a spectator, who has no fish).
+        if (this.hasFish && typeof data.you === 'string') {
+          this.setMyId(data.you, data.players.find((p) => p.id === data.you));
+        }
         // Start fresh: the list in `welcome` is complete.
         this.remotePlayers.clear();
         for (const player of data.players) {
@@ -325,14 +391,14 @@ export class WorldScene extends Phaser.Scene {
       }
       case MSG.CHAT:
         // The server never sends chat to spectators. Ignore it just in case.
-        if (this.isSpectator) return;
+        if (!this.hasFish) return;
         if (typeof data.text !== 'string' || typeof data.name !== 'string') return;
         // Works for our own messages too (our id is in the overlay as well).
         this.overlay.showBubble(data.id, data.text);
         this.chatLog.addChat(data.name, data.text);
         return;
       case MSG.NOTICE:
-        if (!this.isSpectator && typeof data.text === 'string') {
+        if (this.hasFish && typeof data.text === 'string') {
           this.chatInput.showNotice(data.text);
         }
         return;
@@ -350,7 +416,23 @@ export class WorldScene extends Phaser.Scene {
     this.showStatus();
   }
 
+  // Remembers our id and shows our name label (yellow, see style.css).
+  // `me` is our entry in the `welcome` list, with the name the server
+  // gave us (for a guest, "Guest_1234").
+  setMyId(id, me) {
+    if (id === this.myId) return;
+    if (this.myId) this.overlay.removePlayer(this.myId);
+    this.myId = id;
+    this.overlay.addPlayer(id, me?.name || '', { isLocal: true, isGuest: me?.guest === true });
+  }
+
   handleNetStatus(status) {
+    // The tank is full: switch to watching (createGame.js restarts this
+    // scene as a spectator, which shows "Try again").
+    if (status === STATUS.TANK_FULL) {
+      this.registry.get('worldControl').tankFull();
+      return;
+    }
     this.netStatus = status;
     // When we are not online, the other players' positions are old and
     // would just stand frozen. Remove them. `welcome` adds them back.
@@ -362,8 +444,19 @@ export class WorldScene extends Phaser.Scene {
 
   // Updates the status box in the top-left corner.
   showStatus() {
-    // Logged-out visitors see no status box: the login popup is enough.
-    if (this.isSpectator) {
+    // Watching because the tank was full: say so, and offer to try again.
+    if (this.mode === MODE.SPECTATOR) {
+      if (this.registry.get('spectatorReason') === 'full') {
+        showNetStatus('The tank is full. You are watching.', 'Try again', () =>
+          this.registry.get('worldControl').tryAgain(),
+        );
+      } else {
+        hideNetStatus();
+      }
+      return;
+    }
+    // Still checking a saved login: nothing to say yet.
+    if (!this.connection) {
       hideNetStatus();
       return;
     }
@@ -395,6 +488,12 @@ export class WorldScene extends Phaser.Scene {
       case STATUS.REPLACED:
         // Reconnecting here closes the game in the other tab or device.
         showNetStatus('You are playing in another tab or device.', 'Play here', retry);
+        break;
+      case STATUS.AWAY:
+        // The server closed our fish after a long time without moving or
+        // chatting. "Rejoin" connects again; with the handoff token (if it
+        // is still fresh) the fish comes back in the same place.
+        showNetStatus('You were away for a while.', 'Rejoin', retry);
         break;
       case STATUS.GAME_REJECTED:
         showNetStatus('Game server rejected your login. Please log out and log in again.');

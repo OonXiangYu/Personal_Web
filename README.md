@@ -7,14 +7,16 @@ Swimming down means going deeper. PC and phone players share the same world.
 - Log in with a username and password.
 - Real-time multiplayer: everyone who is logged in sees each other swim.
 - Chat bubbles and a chat log.
-- A placeholder ocean (1920 × 3840 px): a blue-to-black water gradient and slow bubbles.
+- A painted ocean (1920 × 1920 px world) in parallax layers: sky, water and a coral reef along the
+  bottom of the screen (resting on the seabed at the bottom), each moving at its own speed when the camera moves (`src/game/ParallaxOcean.js`).
+  The water gets darker with depth (a "depth shade"); the reef has its own milder darkening. Plus slow bubbles.
   Fish swim in all directions with a little inertia, and can never leave the water.
-- The camera stays inside the world (no black is ever shown), plus a 96 px strip of sky
+- The camera stays inside the world (no black is ever shown), plus a 128 px strip of sky
   above the surface (`SKY_VIEW_HEIGHT` in `src/game/Ocean.js`). On very wide screens the
   zoom goes up so the world always fills the screen width.
 - A Tiled map with walls, a spawn point and layers above the players.
-- Before logging in, the live world runs behind the login popup
-  (logged-out visitors watch as read-only "spectators", see below).
+- Visitors play straight away as a **guest** fish (`Guest_1234`, grey name). Logging in is
+  optional: the "Log in" button (top-right) opens the popup. See "Guests" below.
 
 Next: the chat moderation model.
 
@@ -24,10 +26,13 @@ Next: the chat moderation model.
 npm run test:relogin
 ```
 
-It logs two test players (`test_ann` on a PC-sized window, `test_ben` on a phone-sized one)
-in and out 5 times without reloading, and checks that the name label, status box, chat log,
-chat, Log out button, Chat button and joystick come back every time, with no duplicates and
-no JavaScript errors. It ends with **PASSED** or **FAILED** (and a list of problems).
+Two visitors (`test_ann` on a PC-sized window, `test_ben` on a 360 px phone) start as guests,
+then go guest → log in → log out → guest 5 times without reloading. It checks the name labels
+(own name yellow, guests grey), the status box, chat (and the 60-character guest limit), the
+Log in / Log out buttons, the popup (the fish stops while it is open; it closes with the X,
+Esc or a click outside), the Chat button and joystick, and that the fish **keeps its place**
+on every login and logout. Always exactly 2 fish in the room, no duplicates, no JavaScript
+errors. It ends with **PASSED** or **FAILED** (and a list of problems).
 
 - Nothing needs to be running: it starts its own test servers on ports **4300** and **8797**
   (and 9339), and stops them at the end. Your own `vercel dev` / `wrangler dev` are not touched.
@@ -45,7 +50,7 @@ Always in this order:
 2. **Then the website:** `git push` (Vercel deploys it).
 
 Why this order? A new website may ask the server for things an old server does not know
-(for example spectator connections). A new server still works with an old website.
+(for example guest connections). A new server still works with an old website.
 After changing the map, both steps are needed (see "Editing the map").
 
 ## Tech
@@ -94,13 +99,14 @@ realtime/            Real-time server (Cloudflare Worker), deployed separately
 public/assets/       Images and the map (served as they are). File names: lowercase only.
   maps/world.tmj     The world map (Tiled)
   tilesets/          Tileset images used by the map (collision.png: the red wall tile)
-  sprites/fish/      The fish picture (clownfish.png, 44 x 26, facing left)
+  backgrounds/ocean/ The parallax layers: sky, water, coral-far/mid/near/close/foreground (480 px wide, repeating)
+  sprites/fish/      The fish swim animation (clownfish-swim.png: 8 frames of 45 x 27, facing left)
   fonts/             The pixel font (Fusion Pixel) and its license files
 tests/
-  relogin.test.js    Log in / log out 5 times on PC and phone (npm run test:relogin)
+  relogin.test.js    Guest → log in → log out → guest, 5 times on PC and phone (npm run test:relogin)
 tools/
   generate-map.js    Sets up world.tmj: size, empty "ground" layer, collision tileset, spawn point
-  make-fish-sprite.js  Makes the 44 x 26 fish from the big original picture
+  make-fish-animation.js  Lines up the fish frames and packs them into clownfish-swim.png
   png.js             Small PNG read/write helpers for the tools
 src/
   main.js            Page start-up: auto login, login form, start the game
@@ -108,8 +114,8 @@ src/
   net/               Connection to the real-time server
   game/              Phaser game: scenes, map, ocean background, fish (Player.js), controls
 old-assets/          Files we no longer use, kept just in case (never served):
-                     the old walking character, its attack sprites, the grass tileset,
-                     and the original big clownfish picture
+                     the original fish frames (clownfish-frames/, the source for
+                     tools/make-fish-animation.js), the old single fish and its old script
 ```
 
 ## Editing the map (Tiled)
@@ -309,10 +315,35 @@ The free plan allows 100,000 requests and 13,000 GB-seconds of run time per day.
 Every 20 messages from browsers count as 1 request, so one player walking for an hour
 uses about 2,000 requests. The room stops its timer when no players are online.
 
-### Spectators (logged-out visitors)
+### Guests
 
-The login page shows the live world. For that, a logged-out page opens a read-only
-"spectator" connection (no token, `?spectator=1`; the Origin is still checked).
+Visitors without a login connect as guests (`?guest=1`, no token; the Origin is still checked).
+
+- The **server** makes the guest's id (`guest:` + random) and name (`Guest_` + 4 digits).
+  The browser cannot choose them. Guests are never stored in MongoDB.
+- Guests are real players: shown, counted, and they start the room's timer.
+- Guest chat is stricter: at most **60 characters**, 1 message per 2 s, 6 per 30 s
+  (logged-in players: 80 characters, about 1 per second, 10 per 30 s). All chat goes
+  through the moderation step.
+- Usernames starting with "guest" (any case) cannot be registered, so nobody can look like a guest.
+- A saved valid login logs in by itself on page load.
+- **Handoff token:** each `welcome` gives the page a secret token (valid 60 s after the
+  connection closes). The next connection sends it, so after login or logout the fish stays in
+  the same place, and a reconnecting guest keeps the same name.
+
+Limits (in `shared/protocol.js`):
+
+- `MAX_FISH_PER_ROOM = 30`. A new visitor in a full tank watches as a spectator
+  ("The tank is full. You are watching." + "Try again"; close code **4005**). A guest who logs
+  in keeps their slot and is never refused.
+- Idle fish are closed: guests after **15 minutes**, logged-in players after **30 minutes**
+  without moving or chatting (`GUEST_IDLE_MS`, `PLAYER_IDLE_MS`; close code **4006**). The page
+  shows "You were away for a while." + "Rejoin", and does not reconnect by itself.
+
+### Spectators (full tank)
+
+When the tank is full, the page opens a read-only "spectator" connection instead
+(no token, `?spectator=1`; the Origin is still checked).
 
 - Spectators see players' names and positions, but **never chat**. Anything they send is ignored.
 - They are not players: not shown, not counted in "Online (N players)".

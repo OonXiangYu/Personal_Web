@@ -40,12 +40,16 @@ export class PlayerOverlay {
   }
 
   // Adds a name label for a player.
-  // isLocal: true for our own player (its name gets a different color).
-  addPlayer(id, name, { isLocal = false } = {}) {
+  // isLocal: true for our own player (its name is yellow).
+  // isGuest: true for a guest (its name is grey). Our own name stays yellow
+  //          even when we are a guest (style.css puts .is-local last).
+  addPlayer(id, name, { isLocal = false, isGuest = false } = {}) {
     this.removePlayer(id);
 
     const root = document.createElement('div');
-    root.className = isLocal ? 'player-tag is-local' : 'player-tag';
+    root.className = 'player-tag';
+    root.classList.toggle('is-local', isLocal);
+    root.classList.toggle('is-guest', isGuest);
     // Start hidden. update() shows it once it knows where to put it.
     root.hidden = true;
 

@@ -11,14 +11,15 @@
 const INVISIBLE_CHARACTERS =
   /[\u0000-\u001F\u007F-\u009F\u2028\u2029\u200B\u2060\uFEFF\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 
-// Rate limit: a "bucket" of BURST messages that refills at REFILL_PER_SECOND.
-// So a player can send 3 quick messages, then about 1 per second.
-const BURST = 3;
-const REFILL_PER_SECOND = 1;
+// Rate limits. Two rules, both must pass:
+//   1. a "bucket" of `burst` messages that refills at `refillPerSecond`
+//   2. at most `maxInWindow` messages in `windowMs` (against longer spam)
 
-// Second rule, for longer spam: at most this many messages in WINDOW_MS.
-const MAX_IN_WINDOW = 10;
-const WINDOW_MS = 30_000;
+// Logged-in players: 3 quick messages, then about 1 per second; 10 per 30 s.
+export const PLAYER_CHAT_LIMITS = { burst: 3, refillPerSecond: 1, maxInWindow: 10, windowMs: 30_000 };
+
+// Guests (stricter): 1 message per 2 seconds, at most 6 per 30 s.
+export const GUEST_CHAT_LIMITS = { burst: 1, refillPerSecond: 0.5, maxInWindow: 6, windowMs: 30_000 };
 
 // The same text again within this time is ignored.
 const DUPLICATE_MS = 5_000;
@@ -42,12 +43,13 @@ export function countCharacters(text) {
 }
 
 // Keeps track of one player's chat, for the limits above.
-// Each player gets their own ChatLimiter.
+// Each player gets their own ChatLimiter, with PLAYER_CHAT_LIMITS or GUEST_CHAT_LIMITS.
 export class ChatLimiter {
-  constructor() {
+  constructor(limits = PLAYER_CHAT_LIMITS) {
+    this.limits = limits;
     // Start full. lastRefillAt = 0 means "long ago", so the bucket is full at
     // the first message no matter what clock the caller uses.
-    this.tokens = BURST;
+    this.tokens = limits.burst;
     this.lastRefillAt = 0;
     // Times of recent accepted messages, for the 30-second rule.
     this.recentTimes = [];
@@ -66,14 +68,15 @@ export class ChatLimiter {
   tryUse(now) {
     // Refill the bucket for the time that passed.
     // Math.max: if the clock ever goes backwards, never take tokens away.
+    const { burst, refillPerSecond, maxInWindow, windowMs } = this.limits;
     const seconds = Math.max(0, (now - this.lastRefillAt) / 1000);
-    this.tokens = Math.min(BURST, this.tokens + seconds * REFILL_PER_SECOND);
+    this.tokens = Math.min(burst, this.tokens + seconds * refillPerSecond);
     this.lastRefillAt = now;
 
     // Forget messages older than the window.
-    this.recentTimes = this.recentTimes.filter((time) => now - time < WINDOW_MS);
+    this.recentTimes = this.recentTimes.filter((time) => now - time < windowMs);
 
-    if (this.tokens < 1 || this.recentTimes.length >= MAX_IN_WINDOW) {
+    if (this.tokens < 1 || this.recentTimes.length >= maxInWindow) {
       return false;
     }
     this.tokens -= 1;

@@ -136,6 +136,26 @@ input {
   }
 }
 
+/* The card holds the X button in its top-right corner. */
+.card {
+  position: relative;
+}
+
+/* The X that closes the popup. Overrides the big blue .card button style. */
+.card .close-button {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  background: none;
+  color: #ccc;
+  font-size: 24px;
+  line-height: 40px;
+}
+
 .card h1 {
   margin: 0 0 12px;
   font-size: 36px;
@@ -208,8 +228,9 @@ input {
   text-align: center;
 }
 
-/* ---------- Logout button ---------- */
+/* ---------- Log in / Log out button (top-right, one at a time) ---------- */
 
+#login-button,
 #logout-button {
   position: fixed;
   /* env(safe-area-inset-*) keeps it away from the phone notch. */
@@ -287,7 +308,13 @@ input {
     1px 1px 0 #000;
 }
 
-/* Our own name is yellow, so it is easy to find yourself. */
+/* Guests have a grey name, so you can tell them from registered players. */
+.player-tag.is-guest .player-name {
+  color: #a8a8a8;
+}
+
+/* Our own name is yellow, so it is easy to find yourself.
+   It comes AFTER the guest rule, so it wins: a guest's own name is yellow too. */
 .player-tag.is-local .player-name {
   color: #ffe680;
 }

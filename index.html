@@ -60,9 +60,11 @@
     <!-- Opens the chat box on phones (bottom-right, away from the joystick). -->
     <button id="chat-button" type="button" aria-label="Chat" hidden>Chat</button>
 
-    <!-- Login / register screen. Shown when the player is not logged in. -->
-    <div id="auth-screen" class="overlay">
+    <!-- Login / register popup. Visitors play as guests; the "Log in" button
+         opens this. Starts hidden. Closed with the X, Esc, or a click outside. -->
+    <div id="auth-screen" class="overlay" hidden>
       <form id="auth-form" class="card" novalidate>
+        <button id="auth-close" type="button" class="close-button" aria-label="Close">×</button>
         <h1>Oscar World</h1>
 
         <!-- Shown while we check a saved login on page load. -->
@@ -99,7 +101,8 @@
       </form>
     </div>
 
-    <!-- Shown while the game is running. -->
+    <!-- Top-right: "Log in" for guests, "Log out" for logged-in players. -->
+    <button id="login-button" type="button" hidden>Log in</button>
     <button id="logout-button" type="button" hidden>Log out</button>
 
     <!-- Connection status of the real-time server, for example "Online (2 players)". -->

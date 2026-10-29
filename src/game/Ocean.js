@@ -1,19 +1,14 @@
-// The placeholder ocean behind everything (side view):
-//   - a strip of light sky above the water surface (the camera can show
-//     SKY_VIEW_HEIGHT pixels above the water; fish cannot go there)
-//   - a thin light line at the surface, so the water edge is clear
-//   - the water: a vertical gradient, bright blue at the top, darker blue in
-//     the middle, almost black at the bottom
+// The ocean behind everything (side view):
+//   - the painted, layered background: sky, water and coral reef, moving
+//     at different speeds with the camera (see ParallaxOcean.js)
+//   - the water gets darker with depth (the "depth shade"), and the reef
+//     has its own milder darkening (see ParallaxOcean.js)
 //   - a few slow bubbles and tiny drifting specks, so the water feels alive
-// Cheap on phones: one stretched picture for the water, and only a few dozen
-// particles, created only near the camera.
+// Cheap on phones: only a few dozen particles, created only near the camera.
 
-// ---------- Colours (change these to change the look) ----------
-const SKY_COLOR = 0xcde8f5; // light sky, above the water surface
-const SURFACE_LINE_COLOR = 0xeaf8ff; // the thin line at the water surface
-const WATER_TOP_COLOR = 0x3a9ad9; // bright blue, just under the surface
-const WATER_MIDDLE_COLOR = 0x0f3d73; // darker blue, halfway down
-const WATER_BOTTOM_COLOR = 0x03070f; // almost black, at the bottom
+import { createParallaxOcean, LAYER_DEPTH, SKY_IMAGE_HEIGHT, WATER_FILL_COLOR, shadeAt } from './ParallaxOcean.js';
+
+// ---------- Colours ----------
 const BUBBLE_COLOR = 0xd8f2ff;
 const SPECK_COLOR = 0xbfe4ff;
 
@@ -21,19 +16,13 @@ const SPECK_COLOR = 0xbfe4ff;
 // How much sky the camera may show above the water surface (game pixels).
 // The camera's bounds go this far above the world (see WorldScene), so when
 // a fish is at the surface, the player sees this strip of sky above it.
-// Fish themselves can never leave the water.
-export const SKY_VIEW_HEIGHT = 96;
-const SURFACE_LINE_HEIGHT = 2;
-// The gradient picture is 1 pixel wide and this many pixels tall; the game
-// stretches it over the whole world. Taller = smoother colour steps.
-const GRADIENT_STEPS = 480;
+// It is the full height of the sky image. Fish can never leave the water.
+export const SKY_VIEW_HEIGHT = SKY_IMAGE_HEIGHT;
 
 // ---------- Drawing order ----------
-// Far below the map layers (which start at -1,000,000, see WorldMap.js).
-const OCEAN_DEPTH = -3_000_000;
-// Particles: behind the fish (fish use their y position, 0 and up),
-// in front of the water and the map's lower layers.
-const PARTICLE_DEPTH = -1;
+// Particles: between the mid and the near reef (see LAYER_DEPTH), so
+// bubbles rise from inside the reef. Behind the fish.
+const PARTICLE_DEPTH = LAYER_DEPTH.bubbles;
 
 // ---------- Particles ----------
 const BUBBLE_EVERY_MS = 350; // one new bubble this often
@@ -44,46 +33,23 @@ const SPECK_LIFE_MS = [6000, 10000];
 const SPECK_DRIFT_SPEED = [2, 6]; // very slow sideways drift
 
 // Texture names (made once, then reused when the scene restarts).
-const GRADIENT_TEXTURE = 'ocean-gradient';
 const BUBBLE_TEXTURE = 'ocean-bubble';
 const SPECK_TEXTURE = 'ocean-speck';
 
 // Builds the ocean in a scene. `mapInfo` gives the world size.
 export function createOcean(scene, mapInfo) {
-  const { width, height } = mapInfo;
-
-  // Sky: the strip above the water that the camera may show.
-  scene.add
-    .rectangle(0, -SKY_VIEW_HEIGHT, width, SKY_VIEW_HEIGHT, SKY_COLOR)
-    .setOrigin(0, 0)
-    .setDepth(OCEAN_DEPTH);
-
-  // Water: the gradient picture stretched over the whole world.
-  makeGradientTexture(scene);
-  scene.add.image(0, 0, GRADIENT_TEXTURE).setOrigin(0, 0).setDisplaySize(width, height).setDepth(OCEAN_DEPTH);
-
-  // A thin light line at the surface (just under it, inside the water).
-  scene.add
-    .rectangle(0, 0, width, SURFACE_LINE_HEIGHT, SURFACE_LINE_COLOR)
-    .setOrigin(0, 0)
-    .setDepth(OCEAN_DEPTH + 1);
+  createParallaxOcean(scene, mapInfo);
 
   makeDotTextures(scene);
   addParticles(scene, mapInfo);
 }
 
-// A 1 x GRADIENT_STEPS picture with the three water colours, made with a
-// normal browser canvas. Works with every Phaser renderer.
-// The water colour at a depth, as a number like 0x3a9ad9.
-// `depth` is 0 at the surface and 1 at the bottom. It uses the same three
-// colours as the gradient picture, so a fish tinted with this colour matches
-// the water behind it (see depthFade.js).
+// The water colour at a depth, as a number like 0x007ae1.
+// `depth` is 0 at the surface and 1 at the bottom. It is the water fill
+// colour darkened by the depth shade, so a fish tinted with this colour
+// matches the water behind it (see depthFade.js).
 export function waterColorAt(depth) {
-  const d = Math.min(1, Math.max(0, depth));
-  // Top half: top colour -> middle colour. Bottom half: middle -> bottom.
-  return d < 0.5
-    ? mixColors(WATER_TOP_COLOR, WATER_MIDDLE_COLOR, d / 0.5)
-    : mixColors(WATER_MIDDLE_COLOR, WATER_BOTTOM_COLOR, (d - 0.5) / 0.5);
+  return mixColors(WATER_FILL_COLOR, 0x000000, shadeAt(depth));
 }
 
 // Mixes two colours: share 0 = all `from`, share 1 = all `to`.
@@ -94,24 +60,6 @@ export function mixColors(from, to, share) {
     return Math.round(a + (b - a) * share) << shift;
   };
   return channel(16) | channel(8) | channel(0);
-}
-
-// 0x3a9ad9 -> "#3a9ad9" (the browser canvas wants text colours).
-function toCssColor(color) {
-  return `#${color.toString(16).padStart(6, '0')}`;
-}
-
-function makeGradientTexture(scene) {
-  if (scene.textures.exists(GRADIENT_TEXTURE)) return;
-  const texture = scene.textures.createCanvas(GRADIENT_TEXTURE, 1, GRADIENT_STEPS);
-  const context = texture.getContext();
-  const gradient = context.createLinearGradient(0, 0, 0, GRADIENT_STEPS);
-  gradient.addColorStop(0, toCssColor(WATER_TOP_COLOR));
-  gradient.addColorStop(0.5, toCssColor(WATER_MIDDLE_COLOR));
-  gradient.addColorStop(1, toCssColor(WATER_BOTTOM_COLOR));
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, 1, GRADIENT_STEPS);
-  texture.refresh();
 }
 
 // Small pixel pictures for the particles: a 4 x 4 bubble ring and a 1 x 1 speck.

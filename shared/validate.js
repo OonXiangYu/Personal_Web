@@ -41,6 +41,23 @@ export function checkUsername(username) {
   return null;
 }
 
+// Usernames that start with this (in any letter case) cannot be registered,
+// because guests are named "Guest_1234". Otherwise someone could register
+// "Guest_1234" and look like a guest.
+const RESERVED_USERNAME_START = 'guest';
+
+// Checks a username for a NEW account (registration): the normal rules,
+// plus no reserved names. Login uses checkUsername only, so an account made
+// before this rule can still log in.
+export function checkNewUsername(username) {
+  const error = checkUsername(username);
+  if (error) return error;
+  if (username.toLowerCase().startsWith(RESERVED_USERNAME_START)) {
+    return "Usernames starting with 'guest' are reserved.";
+  }
+  return null;
+}
+
 // Checks a password.
 // Returns an error message, or null if the password is OK.
 export function checkPassword(password) {
