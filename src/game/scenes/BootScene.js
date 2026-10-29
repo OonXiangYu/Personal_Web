@@ -4,6 +4,7 @@ import Phaser from 'phaser';
 import { Player } from '../Player.js';
 import { MAP_KEY, MAP_URL, tilesetImageKey } from '../WorldMap.js';
 import { preloadParallaxOcean } from '../ParallaxOcean.js';
+import { Sardines } from '../Sardines.js';
 
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -15,6 +16,7 @@ export class BootScene extends Phaser.Scene {
     Player.preload(this);
     // The layered ocean background (sky, water, reef).
     preloadParallaxOcean(this);
+    Sardines.preload(this);
 
     // When the map file has loaded, look at the tilesets it lists and load
     // each tileset image too. So a tileset you add in Tiled loads by itself,
@@ -37,8 +39,9 @@ export class BootScene extends Phaser.Scene {
 
   // Phaser calls create() when loading is done.
   create() {
-    // The fish swim animation (made once for the whole game).
+    // The fish swim animations (made once for the whole game).
     Player.createAnimations(this);
+    Sardines.createAnimations(this);
     this.scene.start('WorldScene');
   }
 }

@@ -11,6 +11,9 @@ Swimming down means going deeper. PC and phone players share the same world.
   bottom of the screen (resting on the seabed at the bottom), each moving at its own speed when the camera moves (`src/game/ParallaxOcean.js`).
   The water gets darker with depth (a "depth shade"); the reef has its own milder darkening. Plus slow bubbles.
   Fish swim in all directions with a little inertia, and can never leave the water.
+- Schools of sardines in the sunlight layer (`src/game/Sardines.js`, "boids"). They scatter when
+  any player fish comes close and regroup later. Only in each browser (not sent to the server).
+  Press **B** on a PC to show the debug view (neighbour and scare radii, direction arrows).
 - The camera stays inside the world (no black is ever shown), plus a 128 px strip of sky
   above the surface (`SKY_VIEW_HEIGHT` in `src/game/Ocean.js`). On very wide screens the
   zoom goes up so the world always fills the screen width.
@@ -100,13 +103,15 @@ public/assets/       Images and the map (served as they are). File names: lowerc
   maps/world.tmj     The world map (Tiled)
   tilesets/          Tileset images used by the map (collision.png: the red wall tile)
   backgrounds/ocean/ The parallax layers: sky, water, coral-far/mid/near/close/foreground (480 px wide, repeating)
-  sprites/fish/      The fish swim animation (clownfish-swim.png: 8 frames of 45 x 27, facing left)
+  sprites/fish/      The fish swim animations (clownfish-swim.png: 8 frames of 45 x 27, facing left;
+                     sardine-swim.png: 3 sizes x 9 frames, cells of 31 x 7)
   fonts/             The pixel font (Fusion Pixel) and its license files
 tests/
   relogin.test.js    Guest → log in → log out → guest, 5 times on PC and phone (npm run test:relogin)
 tools/
   generate-map.js    Sets up world.tmj: size, empty "ground" layer, collision tileset, spawn point
   make-fish-animation.js  Lines up the fish frames and packs them into clownfish-swim.png
+  make-sardine-animation.js  The same for the sardine frames (3 sizes) -> sardine-swim.png
   png.js             Small PNG read/write helpers for the tools
 src/
   main.js            Page start-up: auto login, login form, start the game

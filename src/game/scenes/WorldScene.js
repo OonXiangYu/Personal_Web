@@ -29,6 +29,7 @@ import { centerLimits } from '../../../shared/mapInfo.js';
 import { PLAYER_HITBOX } from '../../../shared/world.js';
 import { createOcean, SKY_VIEW_HEIGHT } from '../Ocean.js';
 import { DeepLight } from '../DeepLight.js';
+import { Sardines } from '../Sardines.js';
 import { MSG, CLIENT_SEND_INTERVAL_MS, GUEST_CHAT_MAX_CHARS } from '../../../shared/protocol.js';
 
 // Which connection each mode uses (loading has none).
@@ -117,6 +118,11 @@ export class WorldScene extends Phaser.Scene {
     // Names and chat bubbles, drawn as HTML on top of the game (see PlayerOverlay.js).
     this.overlay = new PlayerOverlay(document.getElementById('player-overlay'));
     this.remotePlayers = new RemotePlayers(this, this.overlay);
+
+    // Schools of sardines in the sunlight layer, in every mode (also for
+    // spectators). Only in this browser: decoration, not sent to the server.
+    // They run away from every player fish (see Sardines.js).
+    this.sardines = new Sardines(this, info, () => this.allPlayerFish());
 
     // Set the zoom now, and again every time the window size changes
     // (resizing a browser window or rotating a phone).
@@ -251,8 +257,21 @@ export class WorldScene extends Phaser.Scene {
     );
   }
 
+  // Every player fish right now, as [{ id, sprite }]: ours (if we have one)
+  // and everybody else's. Used by the sardines.
+  allPlayerFish() {
+    const list = [];
+    if (this.player) list.push({ id: this.myId || 'me', sprite: this.player.sprite });
+    for (const id of this.remotePlayers.ids()) {
+      const sprite = this.remotePlayers.getSprite(id);
+      if (sprite) list.push({ id, sprite });
+    }
+    return list;
+  }
+
   // Phaser calls update() every frame. `time` and `delta` are in milliseconds.
   update(time, delta) {
+    this.sardines.update(time, delta);
     if (!this.hasFish) {
       this.remotePlayers.update();
       this.spectatorCamera.update(time, delta);

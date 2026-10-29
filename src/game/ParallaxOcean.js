@@ -4,7 +4,8 @@
 //
 // Back to front:
 //   sky, water, depth shade, far reef, mid reef, (bubbles, see Ocean.js),
-//   near reef, close reef, ... fish ..., foreground reef
+//   near reef, (sardines, see Sardines.js), close reef, ... fish ...,
+//   foreground reef
 //
 // The depth shade darkens only the WATER. The reef is in front of it, with
 // its own milder darkening (REEF_SHADE_AT_BOTTOM). Otherwise the reef would
@@ -110,7 +111,8 @@ export const LAYER_DEPTH = {
   mid: BACKGROUND_DEPTH + 4,
   bubbles: BACKGROUND_DEPTH + 5, // used by Ocean.js
   near: BACKGROUND_DEPTH + 6,
-  close: BACKGROUND_DEPTH + 7,
+  sardines: BACKGROUND_DEPTH + 7, // used by Sardines.js: between the near and close reef
+  close: BACKGROUND_DEPTH + 8,
   // In front of the fish and the map's "above" layers (1,000,000), but
   // behind the deep-water darkness (2,000,000, see DeepLight.js), so the
   // foreground gets dark in the deep like everything else.
