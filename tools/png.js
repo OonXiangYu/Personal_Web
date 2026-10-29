@@ -60,6 +60,12 @@ export function readPng(file) {
 
 // Writes RGBA pixels as a PNG file.
 export function writePng(file, width, height, pixels) {
+  fs.writeFileSync(file, encodePng(width, height, pixels));
+}
+
+// Turns RGBA pixels into the bytes of a PNG file (for example to put the
+// PNG inside another file, like a .ico).
+export function encodePng(width, height, pixels) {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);
@@ -72,15 +78,12 @@ export function writePng(file, width, height, pixels) {
     pixels.copy(raw, y * (width * 4 + 1) + 1, y * width * 4, (y + 1) * width * 4);
   }
 
-  fs.writeFileSync(
-    file,
-    Buffer.concat([
-      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-      chunk('IHDR', header),
-      chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
-      chunk('IEND', Buffer.alloc(0)),
-    ]),
-  );
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
 // The "Paeth" guess used by PNG filter 4.

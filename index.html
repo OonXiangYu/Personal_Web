@@ -11,6 +11,12 @@
     <!-- viewport-fit=cover lets the game use the whole screen on phones with a notch. -->
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Oscar World</title>
+    <!-- The icon in the browser tab (the clownfish), made by tools/make-favicon.js.
+         favicon.ico has 16, 32 and 48 px inside; browsers pick the size they need.
+         apple-touch-icon: iPhones use it on the home screen. -->
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <!-- Start downloading the pixel font right away (it is 685 KB), instead of
          waiting until the CSS is read. "crossorigin" is needed for fonts, or the
          browser downloads the file twice. The @font-face rule is in src/ui/style.css. -->

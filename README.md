@@ -112,6 +112,7 @@ tools/
   generate-map.js    Sets up world.tmj: size, empty "ground" layer, collision tileset, spawn point
   make-fish-animation.js  Lines up the fish frames and packs them into clownfish-swim.png
   make-sardine-animation.js  The same for the sardine frames (3 sizes) -> sardine-swim.png
+  make-favicon.js    Makes public/favicon.ico (16/32/48), favicon-32.png and apple-touch-icon.png from the clownfish
   png.js             Small PNG read/write helpers for the tools
 src/
   main.js            Page start-up: auto login, login form, start the game
